@@ -18,7 +18,7 @@ module.exports = (redisClient) => {
   const routingRuleRoutes = require('./routingRuleRoutes')();
   const settlementRoutes = require('./settlementRoutes')(redisClient);
 
-  router.use('/', userRoutes);
+  router.use('/', userRoutes(redisClient));
   router.use('/', receiptRoutes);
   router.use('/', contractRoutes);
   router.use('/', historyRoutes);
