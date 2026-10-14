@@ -96,7 +96,11 @@ impl PaymentRouter {
         access::validate_multisig_config(signers, threshold)
     }
     #[inline]
-    fn load_effective_approvals(env: &Env, signers: &Vec<Address>, new_wasm_hash: &BytesN<32>) -> Vec<Address> {
+    fn load_effective_approvals(
+        env: &Env,
+        signers: &Vec<Address>,
+        new_wasm_hash: &BytesN<32>,
+    ) -> Vec<Address> {
         access::load_effective_approvals(env, signers, new_wasm_hash)
     }
     #[inline]
@@ -138,7 +142,9 @@ impl PaymentRouter {
     #[inline]
     fn bump_heartbeat(env: &Env) {
         if env.storage().instance().has(&DataKey::BackupAdmin) {
-            env.storage().instance().set(&DataKey::LastHeartbeat, &env.ledger().timestamp());
+            env.storage()
+                .instance()
+                .set(&DataKey::LastHeartbeat, &env.ledger().timestamp());
         }
     }
     #[inline]
@@ -3847,7 +3853,6 @@ impl PaymentRouter {
         Ok(removed)
     }
 }
-
 
 #[cfg(test)]
 mod test;

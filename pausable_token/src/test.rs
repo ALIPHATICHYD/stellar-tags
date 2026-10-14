@@ -146,9 +146,12 @@ fn packed_allowance_fields_are_independent() {
 #[test]
 fn packed_allowance_is_big_endian() {
     let env = Env::default();
-    let buf = pack_allowance(&env, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10, 0x1112_1314)
-        .to_array();
-    assert_eq!(&buf[0..16], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    let buf =
+        pack_allowance(&env, 0x0102_0304_0506_0708_090a_0b0c_0d0e_0f10, 0x1112_1314).to_array();
+    assert_eq!(
+        &buf[0..16],
+        &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    );
     assert_eq!(&buf[16..20], &[0x11, 0x12, 0x13, 0x14]);
 }
 

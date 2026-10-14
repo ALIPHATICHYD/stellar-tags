@@ -1,6 +1,6 @@
-use soroban_sdk::{Address, Env};
 use crate::errors::Error;
 use crate::storage::{DataKey, BPS_DIVISOR, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
+use soroban_sdk::{Address, Env};
 
 /// Splits `amount` into the platform fee and the amount forwarded to the
 /// recipient, applying the fee cap and the volume-based discount.
@@ -33,10 +33,9 @@ pub fn load_fee_config(env: &Env) -> Result<(Address, i128, i128), Error> {
         .get(&DataKey::FeeCap)
         .ok_or(Error::NotInitialized)?;
 
-    env.storage().instance().extend_ttl(
-        INSTANCE_LIFETIME_THRESHOLD,
-        INSTANCE_BUMP_AMOUNT,
-    );
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
     Ok((platform_treasury, fee_bps, fee_cap))
 }

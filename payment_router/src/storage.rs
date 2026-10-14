@@ -1,5 +1,5 @@
-use soroban_sdk::{contracttype, Address, BytesN, Env};
 use crate::errors::Error;
+use soroban_sdk::{contracttype, Address, BytesN, Env};
 
 /// Role definitions for the Role-Based Access Control (RBAC) system.
 ///

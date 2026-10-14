@@ -1,10 +1,10 @@
-use soroban_sdk::{Address, BytesN, Env, Symbol, Vec};
 use crate::errors::Error;
 use crate::storage::{
     DataKey, Role, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
     PERSISTENT_LIFETIME_THRESHOLD,
 };
 use crate::types::ActionType;
+use soroban_sdk::{Address, BytesN, Env, Symbol, Vec};
 
 // ── Role-Based Access Control (RBAC) Helpers ─────────────────────────────────
 
@@ -236,10 +236,9 @@ pub fn store_multisig_config(env: &Env, signers: Vec<Address>, threshold: u32) {
     env.storage()
         .instance()
         .set(&DataKey::MultisigThreshold, &threshold);
-    env.storage().instance().extend_ttl(
-        INSTANCE_LIFETIME_THRESHOLD,
-        INSTANCE_BUMP_AMOUNT,
-    );
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 }
 
 pub fn validate_queued_action(env: &Env, action: &ActionType) -> Result<(), Error> {
