@@ -48,6 +48,8 @@ jobs:
 
       - name: Validate Prisma Schema
         run: npm run prisma:validate
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/stellar_test?schema=public"
 
       # Run the full suite with coverage so the thresholds in package.json
       # fail the build whenever coverage regresses below the floor.
