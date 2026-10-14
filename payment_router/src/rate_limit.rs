@@ -1,9 +1,9 @@
-use soroban_sdk::{log, Address, BytesN, Env};
 use crate::errors::Error;
 use crate::storage::{
     current_window, pack_rate_counter, unpack_rate_counter, DataKey, DEFAULT_RATE_LIMIT,
     PERSISTENT_BUMP_AMOUNT, PERSISTENT_LIFETIME_THRESHOLD,
 };
+use soroban_sdk::{log, Address, BytesN, Env};
 
 /// Returns the stored per-ledger invocation cap, or `None` when no configuration has been written.
 pub fn get_rate_limit_config(env: &Env) -> Option<u32> {
