@@ -630,6 +630,8 @@ pub enum Error {
     InvalidDmsConfig = 45,
     /// The sender exceeded the per-ledger payment invocation cap.
     RateLimited = 46,
+    /// The caller does not hold the role required by the entrypoint.
+    RoleNotFound = 47,
     /// A governance proposal id is unknown or no longer votable.
     InvalidProposal = 21,
     /// A governance operation was attempted before governance was configured.
@@ -752,7 +754,6 @@ impl PaymentRouter {
     /// cannot turn the limiter off by setting an absurdly large cap.
     const MAX_RATE_LIMIT: u32 = 1_000_000;
 
-    const VERSION: u32 = 1;
     const CONTRACT_VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
     /// Default ceiling on how far a swap may move against the caller's quote:
@@ -1371,6 +1372,9 @@ impl PaymentRouter {
             Self::PERSISTENT_BUMP_AMOUNT,
         );
 
+        Ok(())
+    }
+
     /// Returns whether the contract is currently paused.
     fn is_paused_internal(env: &Env) -> bool {
         env.storage()
@@ -1788,45 +1792,6 @@ impl PaymentRouter {
     /// configuration, treasury yield movements and token recovery — are
     /// rejected with `Error::Paused`.
     ///
-    /// Essential recovery paths (unpausing/unfreezing, cancelling a queued
-    /// action, withdrawing refunds or emergency funds, role and admin
-    /// governance, compliance configuration and upgrades) deliberately bypass
-    /// this guard, so an incident can always be resolved while the breaker is
-    /// open.
-    fn require_circuit_closed(env: &Env) -> Result<(), Error> {
-        if Self::is_paused_internal(env) {
-            return Err(Error::Paused);
-        }
-        Ok(())
-    }
-
-    /// Returns whether the circuit breaker (pause switch) is currently open.
-    fn is_paused_internal(env: &Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
-    }
-
-    /// Enforces KYC only after the admin has configured a threshold. This
-    /// preserves existing routing behavior until compliance is enabled.
-    fn verify_kyc_for_amount(env: &Env, sender: &Address, amount: i128) -> Result<(), Error> {
-        let threshold: Option<i128> = env.storage().instance().get(&DataKey::KycThreshold);
-        if threshold.is_none() || amount <= threshold.unwrap_or(0) {
-            return Ok(());
-        }
-
-        let oracle: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::KycOracle)
-            .ok_or(Error::KycRequired)?;
-        if !KycOracleClient::new(env, &oracle).is_verified(sender) {
-            return Err(Error::KycRequired);
-        }
-        Ok(())
-    }
-
     /// One-time setup: records the admin and the initial fee configuration
     /// in instance storage. Must be called before `route_payment`.
     ///
@@ -2011,24 +1976,11 @@ impl PaymentRouter {
     /// Queues an admin action to be executed after a 24-hour delay.
     ///
     /// The admin provides the desired `ActionType` variant and receives a
-    /// numeric nonce that uniquely identifies this pending entry.  Pass this
-    /// nonce to `execute_action` after 24 hours, or to `cancel_action` to
-    /// abort the intent.
+    /// numeric nonce identifying this entry. Pass this nonce to `execute_action`
+    /// after 24 hours, or to `cancel_action` to abort the intent.
     ///
-    /// Sensitive parameter changes (`set_platform_treasury`, `set_fee_config`,
-    /// `set_fee_bps`, `set_governance`, `set_min_limit`, `transfer_admin`,
-    /// `set_multisig_config`, `upgrade`, arming the dead man's switch) must go through the timelock.  Use the
-    /// direct setter functions only for actions that are not sensitive (e.g.
-    /// `set_pause` which can also be called directly for immediate operational
-    /// pauses).
-    ///
-    /// Queueing does not pre-authorize anything on its own: `ActionType::Upgrade`
-    /// and `ActionType::SetMultisigConfig` are re-validated at execution time,
-    /// so an upgrade queued today still needs the multi-signature threshold to
-    /// be met for that hash when the delay elapses.
-    ///
-    /// The contract must not be frozen when queuing, and the admin must
-    /// authorize the call.
+    /// Sensitive parameter changes must go through the timelock.
+    /// The contract must not be frozen, and the admin must authorize.
     pub fn queue_action(env: Env, action: ActionType) -> Result<u64, Error> {
         if Self::is_frozen_internal(&env) {
             return Err(Error::ContractFrozen);
@@ -2638,12 +2590,6 @@ impl PaymentRouter {
         Ok(id)
     }
 
-        // 4. Transfer the platform fee to your treasury
-        token_client.transfer(&sender, &platform_treasury, &fee_amount);
-
-        // 5. Transfer the remaining balance to the recipient
-        token_client.transfer(&sender, &recipient, &recipient_amount);
-
     pub fn get_fee_proposal(env: Env, proposal_id: u64) -> Option<FeeProposal> {
         env.storage()
             .persistent()
@@ -3013,13 +2959,6 @@ impl PaymentRouter {
         admin.require_auth();
         Self::apply_set_backup_admin(&env, backup, timeout_seconds)
     }
-    /// Panics if the current TreasuryManager does not authorize the call, or if the
-    /// token transfer fails (e.g. the contract's balance is below `amount`).
-    pub fn recover_tokens(env: Env, token: Address, amount: i128) -> Result<(), Error> {
-        // Circuit breaker: token recovery is a non-essential state change (the
-        // TreasuryManager still has `emergency_withdraw` while paused).
-        Self::require_circuit_closed(&env)?;
-        let treasury_mgr = Self::require_role(&env, Role::TreasuryManager)?;
 
     /// Shared implementation for arming the dead man's switch: validates the
     /// configuration, stores the backup admin and timeout, and starts the
@@ -3679,24 +3618,13 @@ impl PaymentRouter {
     /// Routes a payment from a sender to a recipient, deducting a platform fee.
     ///
     /// # Parameters
-    /// - `sender`: Address the funds are debited from; must authorize the call.
-    /// - `recipient`: Address to receive the funds (minus the platform fee).
-    /// - `token_address`: Contract ID of the token being transferred.
-    /// - `amount`: Amount to route, in the token's smallest unit. Must be
-    ///   positive and within the configured min/max and daily-limit bounds.
+    /// - `sender`: Address funds are debited from; must authorize call.
+    /// - `recipient`: Address to receive funds (minus platform fee).
+    /// - `token_address`: Contract ID of token transferred.
+    /// - `amount`: Amount to route, in token's smallest unit.
     ///
     /// # Returns
-    /// `Ok(())` on success. Returns `Err(Error::Paused)` if routing is
-    /// paused, `Err(Error::NotInitialized)` if the contract has no admin
-    /// set, `Err(Error::InvalidRecipient)` if `sender == recipient`,
-    /// `Err(Error::Blacklisted)` if `recipient` is blacklisted,
-    /// `Err(Error::RateLimited)` if the sender's per-ledger cap (#716) is
-    /// exhausted, `Err(Error::LimitExceeded)` if `amount` is out of bounds,
-    /// or `Err(Error::InsufficientBalance)` if the balance is too low.
-    ///
-    /// # Panics
-    /// Panics if `sender` does not authorize the call, or if the underlying
-    /// token transfer to `platform_treasury` fails.
+    /// `Ok(())` on success, or appropriate `Error` on failure.
     pub fn route_payment(
         env: Env,
         sender: Address,
@@ -3965,26 +3893,18 @@ impl PaymentRouter {
     /// Routes a payment authorised by an off-chain relayer's Ed25519 signature
     /// instead of the sender's on-chain authorization.
     ///
-    /// The relayer signs a canonical payload binding the sender, recipient,
-    /// token, amount, nonce and deadline. The contract verifies the signature,
-    /// burns the nonce to block replays, and then settles the payment through
-    /// the same accounting as a direct `route_payment`.
-    ///
     /// # Parameters
-    /// - `sender`: Address whose funds are routed and whose nonce is consumed.
-    /// - `signer_pubkey`: Ed25519 public key that must have signed the payload.
-    /// - `recipient`: Address the funds are delivered to.
-    /// - `token_address`: Contract ID of the token being transferred.
-    /// - `amount`: Amount to route in the token's smallest unit.
-    /// - `nonce`: Must equal the sender's current meta-transaction nonce.
-    /// - `deadline`: Ledger timestamp after which the submission is rejected.
-    /// - `signature`: Ed25519 signature over the canonical payload.
+    /// - `sender`: Address whose funds are routed.
+    /// - `signer_pubkey`: Ed25519 public key that signed the payload.
+    /// - `recipient`: Destination address.
+    /// - `token_address`: Token contract ID.
+    /// - `amount`: Amount to route.
+    /// - `nonce`: Sender's current meta-transaction nonce.
+    /// - `deadline`: Expiration timestamp.
+    /// - `signature`: Ed25519 signature over canonical payload.
     ///
     /// # Returns
     /// `Ok(())` once the payment has settled.
-    ///
-    /// # Panics
-    /// Panics if the signature does not verify.
     #[allow(clippy::too_many_arguments)]
     pub fn route_payment_meta(
         env: Env,
@@ -4332,89 +4252,6 @@ impl PaymentRouter {
         }
 
         Ok(total_delivered)
-    }
-
-    // ── Meta-transactions (relayer-submitted, allowance-based) ──────────────
-
-    /// Returns the current meta-transaction nonce for a user.
-    ///
-    /// Relayers must use this nonce when building the signed payload.
-    /// The nonce starts at `0` and increments after each successful
-    /// `route_payment_meta`, preventing replay attacks.
-    pub fn get_meta_nonce(env: Env, user: Address) -> u64 {
-        Self::get_meta_nonce_internal(&env, &user)
-    }
-
-    /// Relays a user-signed payment on behalf of the user.
-    ///
-    /// The user signs `SHA256(contract || sender || pubkey || recipient ||
-    /// token || amount || nonce || deadline)` off-chain with Ed25519.
-    /// Any relayer holding XLM for fees submits the payload; the contract
-    /// verifies the signature, checks `nonce` and `deadline`, then moves
-    /// funds via prior token allowance (`approve` + `transfer_from`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn route_payment_meta(
-        env: Env,
-        sender: Address,
-        signer_pubkey: BytesN<32>,
-        recipient: Address,
-        token_address: Address,
-        amount: i128,
-        nonce: u64,
-        deadline: u64,
-        signature: BytesN<64>,
-    ) -> Result<(), Error> {
-        if Self::is_frozen_internal(&env) {
-            return Err(Error::ContractFrozen);
-        }
-        if Self::is_paused(env.clone()) {
-            return Err(Error::Paused);
-        }
-
-        let (platform_treasury, fee_bps, fee_cap) = Self::load_fee_config(&env)?;
-
-        if env.ledger().timestamp() > deadline {
-            return Err(Error::DeadlineExpired);
-        }
-
-        let stored = Self::get_meta_nonce_internal(&env, &sender);
-        if stored != nonce {
-            return Err(Error::InvalidNonce);
-        }
-
-        let message = Self::build_meta_message(
-            &env,
-            &sender,
-            &signer_pubkey,
-            &recipient,
-            &token_address,
-            amount,
-            nonce,
-            deadline,
-        );
-        // Traps on invalid signature; `Error::InvalidSignature` documents
-        // this failure mode for off-chain integrators.
-        env.crypto()
-            .ed25519_verify(&signer_pubkey, &message, &signature);
-
-        let key = DataKey::MetaNonce(sender.clone());
-        env.storage().persistent().set(&key, &(nonce + 1));
-        env.storage().persistent().extend_ttl(
-            &key,
-            Self::PERSISTENT_LIFETIME_THRESHOLD,
-            Self::PERSISTENT_BUMP_AMOUNT,
-        );
-
-        Self::process_single_payment_no_auth(
-            &env,
-            &sender,
-            &recipient,
-            &token_address,
-            amount,
-            &platform_treasury,
-            fee_bps,
-            fee_cap,
-        )
     }
 
     /// Asks a registered DEX how much `buy_token` a swap would return, and
@@ -4814,28 +4651,12 @@ impl PaymentRouter {
 
     /// Records `signer`'s authorization of an upgrade to `new_wasm_hash`.
     ///
-    /// Each group member signs off separately so the M signatures are genuinely
-    /// independent: one compromised key cannot produce a quorum, and every
-    /// approval is bound to one specific WASM hash.
-    ///
-    /// Reaching the threshold does not install the WASM by itself — call
-    /// `upgrade` (or `execute_action` on a queued [`ActionType::Upgrade`]) to
-    /// apply it. Keeping those two steps separate lets the group approve a hash
-    /// and then route the installation through the 24-hour timelock if it wants
-    /// observers to see it coming.
-    ///
     /// # Parameters
     /// - `signer`: The group member approving; must authorize this call.
     /// - `new_wasm_hash`: The WASM hash being approved.
     ///
     /// # Returns
-    /// `Ok(())` on success, `Err(Error::MultisigNotInitialized)` if no group
-    /// is configured, `Err(Error::NotMultisigSigner)` if `signer` is not a
-    /// group member, or `Err(Error::AlreadyApproved)` if `signer` already
-    /// approved this hash.
-    ///
-    /// # Panics
-    /// Panics if `signer` does not authorize the call.
+    /// `Ok(())` on success, or appropriate `Error` on failure.
     pub fn approve_upgrade(
         env: Env,
         signer: Address,
@@ -5333,6 +5154,14 @@ mod test {
             timestamp: env.ledger().timestamp(),
             protocol_version: env.ledger().protocol_version(),
             sequence_number: sequence,
+            network_id: env.ledger().network_id().into(),
+            base_reserve: 100,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6312000,
+        });
+    }
+
     // ── Mock price-feed oracle ───────────────────────────────────────────────
 
     #[contracttype]
