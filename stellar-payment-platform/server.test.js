@@ -792,7 +792,6 @@ describe('GET /federation — memo fields in response', () => {
   test('returns stored text memo in federation response', async () => {
     prisma.user.findFirst.mockResolvedValue({ address: VALID_ADDRESS, memoType: 'text', memo: 'pay123' });
     const res = await request(app).get('/federation?q=alice*localhost&type=name');
-    console.warn('RES BODY:', res.body);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ memo_type: 'text', memo: 'pay123' });
   });
