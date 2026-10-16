@@ -2583,6 +2583,164 @@ impl PaymentRouter {
         )
     }
 
+    /// Routes a payment through two to four consecutive DEX swaps. `path`
+    /// contains the input asset followed by every intermediate asset and the
+    /// output asset. `min_amounts_out[i]` is the required output for hop `i`.
+    /// Any input dust returned by a hop is refunded to `sender` in that hop's
+    /// input asset. All swaps and settlement are atomic.
+    pub fn route_multihop_swap(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        dex_router: Address,
+        amount_in: i128,
+        path: Vec<Address>,
+        min_amounts_out: Vec<i128>,
+    ) -> Result<i128, Error> {
+        let _guard = ReentrancyGuard::new(&env)?;
+        if Self::is_frozen_internal(&env) {
+            return Err(Error::ContractFrozen);
+        }
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+        if sender == recipient {
+            return Err(Error::InvalidRecipient);
+        }
+        if Self::is_blacklisted(env.clone(), recipient.clone()) {
+            return Err(Error::Blacklisted);
+        }
+
+        let hop_count = path.len().saturating_sub(1);
+        if !(2..=4).contains(&hop_count) || min_amounts_out.len() != hop_count {
+            return Err(Error::InvalidSwapPath);
+        }
+        // Paths are intentionally short (at most five assets), so checking
+        // every pair keeps the cycle guard simple and bounded.
+        for i in 0..path.len() {
+            let asset = path.get(i).ok_or(Error::InvalidSwapPath)?;
+            for j in (i + 1)..path.len() {
+                if path.get(j).as_ref() == Some(&asset) {
+                    return Err(Error::CyclicSwapPath);
+                }
+            }
+        }
+        for floor in min_amounts_out.iter() {
+            if floor <= 0 {
+                return Err(Error::InvalidSwapParams);
+            }
+        }
+        if !Self::is_dex_registered_internal(&env, &dex_router) {
+            return Err(Error::DexNotRegistered);
+        }
+
+        let max_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxAmount)
+            .unwrap_or(Self::MAX_AMOUNT);
+        let min_limit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinLimit)
+            .unwrap_or(0);
+        if amount_in <= 0 || amount_in > max_amount || amount_in < min_limit {
+            return Err(Error::LimitExceeded);
+        }
+        Self::verify_kyc_for_amount(&env, &sender, amount_in)?;
+        sender.require_auth();
+        Self::check_rate_limit(&env, &sender)?;
+
+        let (platform_treasury, fee_bps, fee_cap) = Self::load_fee_config(&env)?;
+        let user_volume = Self::accrue_user_record(&env, &sender, amount_in)?;
+        let effective_fee_bps = if user_volume > Self::VOLUME_THRESHOLD {
+            fee_bps / 2
+        } else {
+            fee_bps
+        };
+        let contract_address = env.current_contract_address();
+        let first_token = path.get(0).ok_or(Error::InvalidSwapPath)?;
+        let input_client = token::Client::new(&env, &first_token);
+        if input_client.balance(&sender) < amount_in {
+            return Err(Error::InsufficientBalance);
+        }
+        input_client.transfer(&sender, &contract_address, &amount_in);
+
+        let mut current_amount = amount_in;
+        for i in 0..hop_count {
+            let token_in = path.get(i).ok_or(Error::InvalidSwapPath)?;
+            let token_out = path.get(i + 1).ok_or(Error::InvalidSwapPath)?;
+            let floor = min_amounts_out.get(i).ok_or(Error::InvalidSwapPath)?;
+            let token_in_client = token::Client::new(&env, &token_in);
+            let token_out_client = token::Client::new(&env, &token_out);
+            let input_before = token_in_client.balance(&contract_address);
+            let output_before = token_out_client.balance(&contract_address);
+            token_in_client.transfer(&contract_address, &dex_router, &current_amount);
+            let hop_path = vec![&env, token_in.clone(), token_out.clone()];
+            let result = DexRouterClient::new(&env, &dex_router).swap_exact_tokens_for_tokens(
+                &token_in,
+                &token_out,
+                &current_amount,
+                &floor,
+                &hop_path,
+                &contract_address,
+            );
+            if result.len() != 2 {
+                return Err(Error::InvalidSwapPath);
+            }
+            let reported_out: i128 = result.get(0).ok_or(Error::SwapFailed)?;
+            let reported_unused: i128 = result.get(1).ok_or(Error::SwapFailed)?;
+            let input_after = token_in_client.balance(&contract_address);
+            let output_after = token_out_client.balance(&contract_address);
+            let actual_unused = input_after - (input_before - current_amount);
+            let actual_out = output_after - output_before;
+            if reported_unused < 0
+                || reported_unused > current_amount
+                || actual_unused != reported_unused
+                || reported_out != actual_out
+                || actual_out < floor
+                || actual_out <= 0
+            {
+                return Err(Error::SlippageExceeded);
+            }
+            if actual_unused > 0 {
+                // The path cannot revisit an asset, so this hop's unused input
+                // is no longer needed by a later hop.
+                token_in_client.transfer(&contract_address, &sender, &actual_unused);
+            }
+            env.events().publish(
+                (
+                    Symbol::new(&env, "swap_hop"),
+                    dex_router.clone(),
+                    token_in,
+                    token_out,
+                ),
+                (current_amount, actual_out, actual_unused, floor),
+            );
+            current_amount = actual_out;
+        }
+
+        let final_token = path.get(path.len() - 1).ok_or(Error::InvalidSwapPath)?;
+        let output_client = token::Client::new(&env, &final_token);
+        let (fee_amount, remainder) =
+            Self::calculate_fee(current_amount, effective_fee_bps, fee_cap);
+        if fee_amount > 0 {
+            output_client.transfer(&contract_address, &platform_treasury, &fee_amount);
+        }
+        if remainder > 0 {
+            match output_client.try_transfer(&contract_address, &recipient, &remainder) {
+                Ok(Ok(())) => {}
+                _ => Self::credit_refund_balance(&env, &sender, &final_token, remainder),
+            }
+        }
+        env.events().publish(
+            (symbol_short!("routed"), sender.clone(), recipient.clone()),
+            remainder,
+        );
+        Self::bump_heartbeat(&env);
+        Ok(remainder)
+    }
+
     /// Routes multiple payments in a single transaction. If any payment fails,
     /// the entire batch is reverted atomically.
     ///
