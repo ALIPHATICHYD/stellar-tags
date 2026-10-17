@@ -4,6 +4,14 @@ use soroban_sdk::{
     Env, Symbol, Vec,
 };
 
+/// Two-phase commit protocol for cross-contract, timelocked upgrades
+/// (issue #887).  The protocol logic lives here; `PaymentRouter` exposes it
+/// through the `prepare_cross_contract_upgrade` / `commit_cross_contract_upgrade`
+/// entry points below.
+pub mod timelock;
+
+use timelock::TwoPhaseCommit;
+
 // ── Packed UserSpending helpers ──────────────────────────────────────────────
 //
 // Issue #519: Replace the two-field UserSpending contracttype with a single
@@ -198,6 +206,10 @@ pub enum DataKey {
     /// When `true` the contract is frozen: payments and timelock executions
     /// are blocked.  Stored as `bool` in instance storage.
     Frozen,
+    /// A prepared two-phase cross-contract upgrade manifest, keyed by its
+    /// upgrade ID. Stored in persistent storage so it survives instance
+    /// eviction while the timelock runs.
+    TwoPhaseCommit(BytesN<32>),
 }
 
 /// Contract-level errors returned instead of panicking, so callers get a
@@ -236,6 +248,27 @@ pub enum Error {
     TimelockNotFound = 13,
     /// The contract is frozen; all payments and timelock executions are blocked.
     ContractFrozen = 14,
+    /// No prepared cross-contract upgrade manifest exists for the supplied
+    /// upgrade ID (it was never prepared, or it was already committed).
+    UpgradeManifestNotFound = 15,
+    /// The upgrade manifest is malformed: no target contracts, a different
+    /// number of code hashes than addresses, or a duplicated target.
+    InvalidUpgradeManifest = 16,
+    /// A manifest for this upgrade ID is already prepared; commit or wait for
+    /// its execution window to lapse before preparing it again.
+    UpgradeAlreadyPrepared = 17,
+    /// The 48-hour cross-contract timelock delay has not elapsed yet.
+    UpgradeNotReady = 18,
+    /// The execution deadline of the prepared upgrade has passed; the upgrade
+    /// must be prepared again.
+    UpgradeManifestExpired = 19,
+    /// A participating contract rejected the manifest during the atomic
+    /// commit. The entire invocation was rolled back, so no contract was
+    /// upgraded: the protocol is still fully on its previous version.
+    UpgradeCommitFailed = 20,
+    /// A participating contract rejected the manifest during preparation. The
+    /// entire invocation was rolled back, so no contract was registered.
+    UpgradePrepareFailed = 21,
 }
 
 /// Soroban contract that routes token payments between addresses while
@@ -725,6 +758,65 @@ impl PaymentRouter {
 
         log!(&env, "Timelock action cancelled for nonce {}", nonce);
         Ok(())
+    }
+
+    // ── Two-phase commit: cross-contract timelocked upgrades ────────────────
+
+    /// Phase 1 of a cross-contract upgrade: validate the upgrade manifest and
+    /// register it on every participating contract under one synchronized
+    /// 48-hour timelock.
+    ///
+    /// See [`timelock`] for the protocol description.  Both entry points
+    /// require admin authorization and a non-frozen contract, and both are
+    /// atomic: if any participating contract rejects its manifest, the whole
+    /// invocation reverts and no contract keeps a registration.
+    ///
+    /// # Parameters
+    /// - `upgrade_id`: unique identifier of the upgrade attempt.
+    /// - `contract_addresses`: every contract taking part in the upgrade.
+    /// - `code_hashes`: code hash for the contract at the matching index;
+    ///   must contain exactly one entry per address.
+    ///
+    /// # Returns
+    /// The stored [`TwoPhaseCommit`] manifest, including `execution_deadline`.
+    pub fn prepare_cross_contract_upgrade(
+        env: Env,
+        upgrade_id: BytesN<32>,
+        contract_addresses: Vec<Address>,
+        code_hashes: Vec<BytesN<32>>,
+    ) -> Result<TwoPhaseCommit, Error> {
+        timelock::prepare_cross_contract_upgrade(&env, upgrade_id, contract_addresses, code_hashes)
+    }
+
+    /// Phase 2 of a cross-contract upgrade: after the 48-hour delay has
+    /// elapsed, upgrade every participating contract in one atomic step.
+    ///
+    /// Every manifest entry is validated before the first cross-contract call
+    /// is made.  If any participating contract rejects its own manifest
+    /// validation, the error unwinds the entire invocation, so contracts
+    /// upgraded earlier in the same call roll back with it — the protocol
+    /// ends up either fully upgraded or not upgraded at all.
+    ///
+    /// # Parameters
+    /// - `upgrade_id`: the upgrade prepared by `prepare_cross_contract_upgrade`.
+    ///
+    /// # Errors
+    /// - [`Error::UpgradeManifestNotFound`]: unknown or already committed ID.
+    /// - [`Error::UpgradeNotReady`]: the 48-hour delay has not elapsed.
+    /// - [`Error::UpgradeManifestExpired`]: past `execution_deadline`.
+    /// - [`Error::UpgradeCommitFailed`]: a participating contract rejected its
+    ///   manifest; the whole commit was rolled back.
+    pub fn commit_cross_contract_upgrade(env: Env, upgrade_id: BytesN<32>) -> Result<(), Error> {
+        timelock::commit_cross_contract_upgrade(&env, upgrade_id)
+    }
+
+    /// Returns the prepared [`TwoPhaseCommit`] manifest for `upgrade_id`, or
+    /// [`Error::UpgradeManifestNotFound`] if there is none.
+    pub fn get_cross_contract_upgrade(
+        env: Env,
+        upgrade_id: BytesN<32>,
+    ) -> Result<TwoPhaseCommit, Error> {
+        timelock::get_cross_contract_upgrade(&env, upgrade_id)
     }
 
     // ── Freeze / unfreeze ────────────────────────────────────────────────────
