@@ -45,6 +45,228 @@ export const networks = {
 
 
 
+
+/**
+ * A single transfer instruction for use with [`PaymentRouter::route_payments`].
+ */
+export interface Payment {
+  /**
+ * Amount to route, denominated in the token's smallest unit. Must be
+ * positive and within the contract's configured min/max bounds.
+ */
+amount: i128;
+  /**
+ * Address the funds (minus the platform fee) are credited to.
+ */
+recipient: string;
+  /**
+ * Address the funds are debited from. Must authorize the call.
+ */
+sender: string;
+  /**
+ * Contract ID of the token (or Stellar Asset Contract) being transferred.
+ */
+token_address: string;
+}
+
+
+/**
+ * A single price quote returned by the oracle.
+ */
+export interface PriceData {
+  /**
+ * Number of decimal places used in `price`.
+ */
+decimals: u32;
+  /**
+ * Fixed-point price value. The true price is `price / 10^decimals`.
+ */
+price: i128;
+  /**
+ * Unix timestamp (seconds) when this price was last updated on-chain.
+ */
+timestamp: u64;
+}
+
+
+/**
+ * The result of a DEX quote, returned by [`PaymentRouter::quote_swap`].
+ */
+export interface SwapQuote {
+  /**
+ * Amount of `buy_token` the DEX expects to deliver for the quoted input.
+ */
+amount_out: i128;
+  /**
+ * Configured maximum slippage, in basis points, that produced
+ * `min_amount_out`.
+ */
+max_slippage_bps: i128;
+  /**
+ * Tightest `min_amount_out` that still respects the contract's
+ * `max_slippage_bps` for this quote.
+ */
+min_amount_out: i128;
+}
+
+/**
+ * Describes which administrative parameter change a timelock entry represents.
+ * Each variant carries all the arguments needed to apply that change when the
+ * delay period is over.
+ */
+export type ActionType = {tag: "SetPlatformTreasury", values: readonly [string]} | {tag: "SetFeeConfig", values: readonly [i128, i128]} | {tag: "SetFeeBps", values: readonly [i128]} | {tag: "SetGovernance", values: readonly [string]} | {tag: "SetMinLimit", values: readonly [i128]} | {tag: "TransferAdmin", values: readonly [string]} | {tag: "Upgrade", values: readonly [Buffer]} | {tag: "SetBackupAdmin", values: readonly [string, u64]} | {tag: "RegisterDex", values: readonly [string]} | {tag: "DeregisterDex", values: readonly [string]} | {tag: "SetMaxSlippageBps", values: readonly [i128]} | {tag: "SetMultisigConfig", values: readonly [Array<string>, u32]};
+
+
+/**
+ * A user's combined routing stats, unpacked from the packed `BytesN<40>`
+ * `UserRecord` ledger value (issue #663).
+ *
+ * Returned by [`PaymentRouter::get_user_record`] so a client can read both
+ * counters in a single view call instead of two.
+ */
+export interface UserRecord {
+  /**
+ * Total amount routed by the user in the current 24-hour window.
+ */
+accumulated_amount: i128;
+  /**
+ * Unix timestamp (seconds) at which the 24-hour window last reset.
+ */
+last_reset_time: u64;
+  /**
+ * Cumulative lifetime amount routed by the user.
+ */
+volume: i128;
+}
+
+
+/**
+ * A fee change proposal weighted by governance-token balances.
+ */
+export interface FeeProposal {
+  created_at: u64;
+  executed: boolean;
+  fee_bps: i128;
+  fee_cap: i128;
+  no_votes: i128;
+  proposer: string;
+  quorum: i128;
+  voting_ends_at: u64;
+  yes_votes: i128;
+}
+
+
+/**
+ * Structured payload for meta-transactions.
+ */
+export interface MetaPayment {
+  amount: i128;
+  deadline: u64;
+  nonce: u64;
+  recipient: string;
+  sender: string;
+  token_address: string;
+}
+
+
+/**
+ * A single swap-routed transfer instruction for use with
+ * [`PaymentRouter::route_payment_with_swap`] and
+ * [`PaymentRouter::route_payments_with_swap`].
+ */
+export interface SwapPayment {
+  /**
+ * Amount of `sell_token` to pull from the sender and swap.
+ */
+amount_in: i128;
+  /**
+ * Token the recipient is paid in. Must differ from `sell_token`.
+ */
+buy_token: string;
+  /**
+ * Unix timestamp (seconds) after which the swap must not execute. `0`
+ * disables the deadline, letting the DEX apply its own.
+ */
+deadline: u64;
+  /**
+ * Contract ID of the DEX adapter to invoke. Must be registered by the
+ * admin, which keeps the cross-contract call pointed at audited code.
+ */
+dex: string;
+  /**
+ * Amount of `buy_token` the caller expected from a prior `quote_swap`
+ * call. `0` disables the ceiling check; otherwise the realised output
+ * must stay within the contract's `max_slippage_bps` of this figure.
+ */
+expected_amount_out: i128;
+  /**
+ * Minimum amount of `buy_token` the swap must deliver. This is the
+ * slippage floor: if the DEX returns less, the whole payment reverts.
+ */
+min_amount_out: i128;
+  /**
+ * Address the swapped funds (minus the platform fee) are credited to.
+ */
+recipient: string;
+  /**
+ * Token the sender pays with, in that token's smallest unit.
+ */
+sell_token: string;
+  /**
+ * Address the funds are debited from. Must authorize the call.
+ */
+sender: string;
+}
+
+
+/**
+ * A user's rolling 24-hour spending record.
+ *
+ * Retained purely so existing test snapshots that reference this type by
+ * name keep compiling. Pre-#663 live contract state was stored as a packed
+ * `BytesN<24>`; this struct is not read from or written to storage at runtime.
+ */
+export interface UserSpending {
+  /**
+ * Total amount routed by the user since `last_reset_time`.
+ */
+accumulated_amount: i128;
+  /**
+ * Unix timestamp (seconds) at which the 24-hour window last reset.
+ */
+last_reset_time: u64;
+}
+
+
+/**
+ * A pending timelock entry stored in persistent ledger storage.
+ */
+export interface TimelockEntry {
+  /**
+ * The action payload to apply once the delay has elapsed.
+ */
+action: ActionType;
+  /**
+ * Ledger timestamp (seconds since epoch) when this action was queued.
+ */
+queued_at: u64;
+}
+
+
+/**
+ * Multi-signature configuration for contract upgrades.
+ */
+export interface MultisigConfig {
+  /**
+ * The list of authorized signers.
+ */
+signers: Array<string>;
+  /**
+ * The minimum number of signers required to approve an upgrade.
+ */
+threshold: u32;
+}
+
 /**
  * Contract-level errors returned instead of panicking, so callers get a
  * specific, stable error code to branch on rather than an opaque trap.
@@ -249,6 +471,26 @@ upgrade_id: Buffer;
 
 export interface Client {
   /**
+   * Construct and simulate a ping transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Routes a payment from a sender to a recipient, deducting a platform fee.
+   *
+   * # Parameters
+   * - `sender`: Address the funds are debited from; must authorize the call.
+   * - `recipient`: Address to receive the funds (minus the platform fee).
+   * - `token_address`: Contract ID of the token being transferred.
+   * - `amount`: Amount to route, in the token's smallest unit. Must be
+   * positive and within the configured min/max and daily-limit bounds.
+   *
+   * This is the primary way for the admin to reset the timer without
+   * changing any contract state. Routing a payment also bumps the
+   * heartbeat automatically. A no-op when no backup admin is configured.
+   *
+   * Admin authorization is required. Works even while the contract is
+   * frozen so the legitimate admin can keep the switch alive.
+   */
+  ping: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a get_fee transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns the current protocol fee percentage in basis points.
    * 
@@ -291,7 +533,40 @@ export interface Client {
    * # Panics
    * Does not panic.
    */
-  version: (options?: MethodOptions) => Promise<AssembledTransaction<u32>>
+  get_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>
+
+  /**
+   * Construct and simulate a get_price transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Fetches the current exchange rate for a `(base_asset, quote_asset)`
+   * pair from the configured price-feed oracle, validates it, and returns
+   * the result.
+   *
+   * Every failure path below first attempts to serve an admin-configured
+   * fallback price for the pair; the oracle error is only surfaced when no
+   * fallback exists.
+   *
+   * ## Validation flow
+   *
+   * 1. **Oracle configured?** - Otherwise `Err(Error::OracleNotConfigured)`.
+   * 2. **Call oracle** - Invoke the oracle's `get_price`; a trapped or
+   * unavailable contract yields `Err(Error::OracleCallFailed)`.
+   * 3. **Staleness check** - Reject a `price_data.timestamp` older than the
+   * configured threshold (default 3 600 s) with
+   * `Err(Error::OraclePriceStale)`. A threshold of `0` disables this check.
+   * 4. **Validity check** - A price <= 0 is invalid
+   * (`Err(Error::OraclePriceInvalid)`).
+   * 5. **Return** - The validated `PriceData` is returned to the caller.
+   *
+   * `base_asset` is typically the XLM native contract and `quote_asset` the
+   * USDC contract.
+   */
+  get_price: ({base_asset, quote_asset}: {base_asset: string, quote_asset: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<PriceData>>>
+
+  /**
+   * Construct and simulate a is_frozen transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns whether the contract is currently frozen.
+   */
+  is_frozen: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
 
   /**
    * Construct and simulate a unfreeze transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -357,7 +632,43 @@ export interface Client {
   set_pause: ({paused}: {paused: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a grant_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Grants an operational role to `grantee`.
+   *
+   * Only an address holding `SuperAdmin` may call this.  The `admin`
+   * parameter is the address expected to authorize the transaction, and
+   * `admin.require_auth()` is always invoked, so a caller that cannot supply
+   * that signature is rejected even if the role would otherwise resolve.
+   *
+   * # Parameters
+   * - `admin`: Address expected to authorize the call; must hold `SuperAdmin`.
+   * - `grantee`: Address to receive the role.
+   * - `role`: The `Role` variant to grant.
+   *
+   * # Returns
+   * `Ok(())` on success, `Err(Error::RoleNotFound)` if `admin` does not hold
+   * `SuperAdmin`, or `Err(Error::NotInitialized)` if the contract has no
+   * admin set yet.
+   *
+   * # Panics
+   * Panics if `admin` does not authorize the call.
+   *
+   * Granting a role the grantee already holds is a no-op that emits
+   * `role_assigned` again rather than an error.  Because a role has a single
+   * designated holder, granting it to a new address revokes it from the
+   * previous one.
+   */
+  grant_role: ({admin, grantee, role}: {admin: string, grantee: string, role: Role}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Circuit-breaker guard applied to every non-essential operation.
+   *
+   * While the pause switch is engaged all operational state changes —
+   * payments, timelock queue/execute, fee/treasury/governance/min-limit
+   * configuration, treasury yield movements and token recovery — are
+   * rejected with `Error::Paused`.
+   *
    * One-time setup: records the admin and the initial fee configuration
    * in instance storage. Must be called before `route_payment`.
    * 
@@ -380,6 +691,33 @@ export interface Client {
   initialize: ({admin, platform_treasury, fee_bps, fee_cap, max_amount}: {admin: string, platform_treasury: string, fee_bps: i128, fee_cap: i128, max_amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a quote_swap transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Asks a registered DEX how much `buy_token` a swap would return, and
+   * derives the `min_amount_out` the sender should use from the contract's
+   * configured slippage ceiling.
+   *
+   * This is a read-only cross-contract call: it moves no funds and changes no
+   * state, so it is safe to call off-chain before building a
+   * [`SwapPayment`].
+   *
+   * # Parameters
+   * - `dex`: Contract ID of a registered DEX adapter.
+   * - `sell_token`: Token the sender would pay with.
+   * - `buy_token`: Token the recipient would be paid in.
+   * - `amount_in`: Amount of `sell_token` to price, in its smallest unit.
+   *
+   * # Returns
+   * A [`SwapQuote`] with the quoted output, the slippage-adjusted
+   * `min_amount_out`, and the slippage ceiling used. Returns
+   * `Err(Error::DexNotRegistered)` if `dex` was never registered or
+   * `Err(Error::SwapFailed)` if the DEX quote call reverts.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  quote_swap: ({dex, sell_token, buy_token, amount_in}: {dex: string, sell_token: string, buy_token: string, amount_in: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<SwapQuote>>>
+
+  /**
    * Construct and simulate a set_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Alias for `set_pause`. Admin-only.
    * 
@@ -393,6 +731,73 @@ export interface Client {
    * Panics if the current admin does not authorize the call.
    */
   set_paused: ({paused}: {paused: boolean}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a assign_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Grants an operational role to an account. SuperAdmin-protected.
+   *
+   * Retained for compatibility with the published bindings; this is
+   * [`Self::grant_role`] with the `admin` argument resolved by the contract
+   * instead of supplied by the caller.
+   *
+   * # Parameters
+   * - `account`: Target address to receive the role.
+   * - `role`: The `Role` variant to grant.
+   *
+   * # Returns
+   * `Ok(())` on success, or `Err(Error::NotInitialized)` if uninitialized.
+   *
+   * # Panics
+   * Panics if the current `SuperAdmin` does not authorize the call.
+   */
+  assign_role: ({account, role}: {account: string, role: Role}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a claim_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Dead man's switch claim: transfers admin rights to `claimant` if they
+   * are the configured backup admin and the admin has not pinged (directly
+   * or via routing a payment) for at least the configured timeout.
+   *
+   * Deliberately NOT timelocked and NOT blocked by a contract freeze: if
+   * the primary admin is gone there is nobody left to execute a queued
+   * action, and freezing must not be able to brick recovery.
+   *
+   * # Parameters
+   * - `claimant`: Address claiming admin rights. Must be the configured
+   * backup admin and must authorize the call.
+   *
+   * # Returns
+   * `Ok(())` on success, `Err(Error::NoBackupAdmin)` if no backup is
+   * configured, `Err(Error::Unauthorized)` if `claimant` is not the
+   * backup, or `Err(Error::DmsNotReady)` if the timeout has not elapsed.
+   */
+  claim_admin: ({claimant}: {claimant: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a revoke_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Revokes an operational role from `grantee`.
+   *
+   * Only an address holding `SuperAdmin` may call this.  As with
+   * [`Self::grant_role`], `admin.require_auth()` is always invoked.
+   *
+   * # Parameters
+   * - `admin`: Address expected to authorize the call; must hold `SuperAdmin`.
+   * - `grantee`: Address from which the role will be revoked.
+   * - `role`: The `Role` variant to revoke.
+   *
+   * # Returns
+   * `Ok(())` on success, `Err(Error::RoleNotFound)` if `admin` does not hold
+   * `SuperAdmin`, `Err(Error::InvalidRole)` if the call would revoke the
+   * acting `SuperAdmin`'s own root role, or `Err(Error::NotInitialized)`.
+   *
+   * # Panics
+   * Panics if `admin` does not authorize the call.
+   *
+   * Revoking a role the grantee never held is a no-op that emits
+   * `role_revoked` rather than an error, so revocations are idempotent and
+   * safe to retry.
+   */
+  revoke_role: ({admin, grantee, role}: {admin: string, grantee: string, role: Role}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a set_fee_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -605,6 +1010,53 @@ export interface Client {
   transfer_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a approve_upgrade transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Records `signer`'s authorization of an upgrade to `new_wasm_hash`.
+   *
+   * # Parameters
+   * - `signer`: The group member approving; must authorize this call.
+   * - `new_wasm_hash`: The WASM hash being approved.
+   *
+   * # Returns
+   * `Ok(())` on success, or appropriate `Error` on failure.
+   */
+  approve_upgrade: ({signer, new_wasm_hash}: {signer: string, new_wasm_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_role_member transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the primary designated member address for a role, if one is configured.
+   *
+   * # Parameters
+   * - `role`: The role variant to query.
+   *
+   * # Returns
+   * `Some(Address)` if set, or `None` if unassigned.
+   */
+  get_role_member: ({role}: {role: Role}, options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>
+
+  /**
+   * Construct and simulate a get_user_record transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns a sender's combined routing record: the amount accumulated in
+   * the current 24-hour window and their cumulative lifetime volume
+   * (issue #663).
+   *
+   * Reads the single packed `UserRecord` entry. For a sender that only has
+   * the legacy pre-#663 split entries, both counters are combined from
+   * those without writing anything.
+   *
+   * # Parameters
+   * - `user`: Sender address to look up.
+   *
+   * # Returns
+   * A [`UserRecord`] with zeroed counters if `user` has never routed a
+   * payment; `last_reset_time` is then the current ledger timestamp.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  get_user_record: ({user}: {user: string}, options?: MethodOptions) => Promise<AssembledTransaction<UserRecord>>
+
+  /**
    * Construct and simulate a get_user_volume transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Returns the cumulative amount a given sender has routed through the contract.
    * 
@@ -750,6 +1202,90 @@ export interface Client {
   add_supported_token: ({_token}: {_token: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
+   * Construct and simulate a commit_archive_root transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Commits a SHA-256 Merkle root of a batch of payment-record snapshots
+   * into persistent storage, opening a new archive epoch.
+   *
+   * Call this before `prune_archived_entries`. Requires TreasuryManager.
+   * Returns the new epoch number.
+   *
+   * Errors: NotInitialized, ContractFrozen.
+   */
+  commit_archive_root: ({root, leaves, description}: {root: Buffer, leaves: Array<ArchiveLeaf>, description: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u64>>>
+
+  /**
+   * Construct and simulate a get_multisig_config transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the current multi-signature admin group.
+   *
+   * # Returns
+   * The configured signers and threshold, or `Err(Error::MultisigNotInitialized)`
+   * if `set_multisig_config` has not been called yet.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  get_multisig_config: (options?: MethodOptions) => Promise<AssembledTransaction<Result<MultisigConfig>>>
+
+  /**
+   * Construct and simulate a migrate_user_record transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Permissionless migration of a sender's legacy pre-#663 split entries
+   * (`UserSpending` + `UserVolume`) into the single packed `UserRecord`
+   * (issue #663).
+   *
+   * Callable by anyone: it only recombines values that are already on the
+   * ledger and never invents or destroys value. When the sender's packed
+   * record was already created by a recent payment, this just removes the
+   * stale legacy keys and keeps the newer packed values.
+   *
+   * # Parameters
+   * - `user`: The sender whose legacy entries should be migrated.
+   *
+   * # Returns
+   * `true` if legacy state was found and migrated, `false` if `user` has
+   * no legacy entries to migrate.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  migrate_user_record: ({user}: {user: string}, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
+
+  /**
+   * Construct and simulate a remove_backup_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Disables the dead man's switch, removing the backup admin and its
+   * claim window. The inactivity timeout is left in storage untouched so
+   * a later re-arming (via timelock) can reuse it.
+   *
+   * Admin authorization is required.
+   */
+  remove_backup_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a set_multisig_config transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Configures the multi-signature admin group that authorizes upgrades.
+   *
+   * The signer set is replaced wholesale: addresses that are not in
+   * `signers` immediately lose the ability to approve, and a threshold
+   * already reached for a pending hash is re-evaluated against the new
+   * configuration.
+   *
+   * # Parameters
+   * - `signers`: The N addresses whose signatures count. Must be non-empty
+   * and free of duplicates.
+   * - `threshold`: The M signers required to authorize an upgrade, in
+   * `1..=signers.len()`.
+   *
+   * # Returns
+   * `Ok(())` on success, `Err(Error::InvalidMultisigConfig)` if the signer
+   * set is empty or holds a duplicate, or the threshold is zero or larger
+   * than the set, or `Err(Error::NotInitialized)` if the contract has no
+   * admin set yet.
+   *
+   * # Panics
+   * Panics if the current admin does not authorize the call.
+   */
+  set_multisig_config: ({signers, threshold}: {signers: Array<string>, threshold: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
    * Construct and simulate a unblacklist_address transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Removes an address from the blacklist. Admin-only.
    * 
@@ -764,6 +1300,71 @@ export interface Client {
    * Panics if the current admin does not authorize the call.
    */
   unblacklist_address: ({address}: {address: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a withdraw_from_yield transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Withdraws treasury principal from the configured lending protocol. TreasuryManager-protected.
+   */
+  withdraw_from_yield: ({token, amount}: {token: string, amount: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a configure_governance transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Configures the DAO token and minimum voting weight for fee proposals.
+   * This administrative bootstrap does not itself change fees; subsequent
+   * fee changes can be made through the proposal lifecycle.
+   */
+  configure_governance: ({governance_token, quorum}: {governance_token: string, quorum: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_dead_mans_switch transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the dead man's switch configuration.
+   *
+   * # Returns
+   * `(backup_admin, timeout_seconds, last_heartbeat, seconds_since_heartbeat)`.
+   * `backup_admin` is `None` and the timestamps `0` when no backup is
+   * configured.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  get_dead_mans_switch: (options?: MethodOptions) => Promise<AssembledTransaction<readonly [Option<string>, u64, u64, u64]>>
+
+  /**
+   * Construct and simulate a get_max_slippage_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the maximum tolerated swap slippage in basis points.
+   *
+   * # Returns
+   * The configured `max_slippage_bps`, or the 1 000 bps (10%) default if
+   * the contract has not been initialized.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  get_max_slippage_bps: (options?: MethodOptions) => Promise<AssembledTransaction<i128>>
+
+  /**
+   * Construct and simulate a set_max_slippage_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Sets the maximum tolerated swap slippage. Admin-only.
+   *
+   * Applied against the `expected_amount_out` a caller supplies alongside a
+   * quote, as a second guard on top of the per-payment `min_amount_out`
+   * floor.
+   *
+   * # Parameters
+   * - `max_slippage_bps`: New ceiling in basis points; `0` to `10_000`.
+   *
+   * # Returns
+   * `Ok(())` on success, `Err(Error::InvalidSwapParams)` if the value is
+   * outside `0..=10_000`, or `Err(Error::NotInitialized)` if the contract has
+   * no admin set yet.
+   *
+   * # Panics
+   * Panics if the current admin does not authorize the call.
+   *
+   * DEPRECATED for direct use.  Queue via `queue_action(ActionType::SetMaxSlippageBps(…))`
+   * and execute after 24 hours.
+   */
+  set_max_slippage_bps: ({max_slippage_bps}: {max_slippage_bps: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a get_effective_fee_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -781,6 +1382,36 @@ export interface Client {
    * Does not panic.
    */
   get_effective_fee_bps: ({sender}: {sender: string}, options?: MethodOptions) => Promise<AssembledTransaction<i128>>
+
+  /**
+   * Construct and simulate a get_upgrade_approvals transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns the signers whose approval of an upgrade to `new_wasm_hash`
+   * currently counts.
+   *
+   * Approvals cast by a signer that has since been rotated out of the group
+   * are omitted, so this list always agrees with `is_upgrade_authorized`.
+   *
+   * # Returns
+   * The counted approvals in the order they were recorded, or an empty
+   * vector if the hash has none. Empty when no group is configured.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  get_upgrade_approvals: ({new_wasm_hash}: {new_wasm_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Array<string>>>
+
+  /**
+   * Construct and simulate a is_upgrade_authorized transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Returns whether an upgrade to `new_wasm_hash` is already authorized.
+   *
+   * # Returns
+   * `true` once `M` group members have approved that exact hash.
+   * `Err(Error::MultisigNotInitialized)` if no group is configured.
+   *
+   * # Panics
+   * Does not panic.
+   */
+  is_upgrade_authorized: ({new_wasm_hash}: {new_wasm_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<boolean>>>
 
   /**
    * Construct and simulate a set_fee_config_legacy transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -943,7 +1574,8 @@ export class Client extends ContractClient {
     )
   }
   public readonly fromJSON = {
-    get_fee: this.txFromJSON<i128>,
+    ping: this.txFromJSON<Result<void>>,
+        get_fee: this.txFromJSON<i128>,
         upgrade: this.txFromJSON<Result<void>>,
         version: this.txFromJSON<u32>,
         unfreeze: this.txFromJSON<Result<void>>,
@@ -951,8 +1583,13 @@ export class Client extends ContractClient {
         is_paused: this.txFromJSON<boolean>,
         set_admin: this.txFromJSON<Result<void>>,
         set_pause: this.txFromJSON<Result<void>>,
+        grant_role: this.txFromJSON<Result<void>>,
         initialize: this.txFromJSON<Result<void>>,
+        quote_swap: this.txFromJSON<Result<SwapQuote>>,
         set_paused: this.txFromJSON<Result<void>>,
+        assign_role: this.txFromJSON<Result<void>>,
+        claim_admin: this.txFromJSON<Result<void>>,
+        revoke_role: this.txFromJSON<Result<void>>,
         set_fee_bps: this.txFromJSON<Result<void>>,
         queue_action: this.txFromJSON<Result<u64>>,
         cancel_action: this.txFromJSON<Result<void>>,
@@ -965,6 +1602,9 @@ export class Client extends ContractClient {
         set_fee_config: this.txFromJSON<Result<void>>,
         set_governance: this.txFromJSON<Result<void>>,
         transfer_admin: this.txFromJSON<Result<void>>,
+        approve_upgrade: this.txFromJSON<Result<void>>,
+        get_role_member: this.txFromJSON<Option<string>>,
+        get_user_record: this.txFromJSON<UserRecord>,
         get_user_volume: this.txFromJSON<i128>,
         withdraw_refund: this.txFromJSON<Result<void>>,
         emergency_freeze: this.txFromJSON<Result<void>>,
@@ -974,8 +1614,20 @@ export class Client extends ContractClient {
         emergency_withdraw: this.txFromJSON<Result<void>>,
         get_refund_balance: this.txFromJSON<i128>,
         add_supported_token: this.txFromJSON<Result<void>>,
+        commit_archive_root: this.txFromJSON<Result<u64>>,
+        get_multisig_config: this.txFromJSON<Result<MultisigConfig>>,
+        migrate_user_record: this.txFromJSON<boolean>,
+        remove_backup_admin: this.txFromJSON<Result<void>>,
+        set_multisig_config: this.txFromJSON<Result<void>>,
         unblacklist_address: this.txFromJSON<Result<void>>,
+        withdraw_from_yield: this.txFromJSON<Result<void>>,
+        configure_governance: this.txFromJSON<Result<void>>,
+        get_dead_mans_switch: this.txFromJSON<readonly [Option<string>, u64, u64, u64]>,
+        get_max_slippage_bps: this.txFromJSON<i128>,
+        set_max_slippage_bps: this.txFromJSON<Result<void>>,
         get_effective_fee_bps: this.txFromJSON<i128>,
+        get_upgrade_approvals: this.txFromJSON<Array<string>>,
+        is_upgrade_authorized: this.txFromJSON<Result<boolean>>,
         set_fee_config_legacy: this.txFromJSON<Result<void>>,
         set_platform_treasury: this.txFromJSON<Result<void>>,
         get_cross_contract_upgrade: this.txFromJSON<Result<TwoPhaseCommit>>,
