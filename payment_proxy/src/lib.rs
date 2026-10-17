@@ -132,6 +132,25 @@ pub enum ProxyError {
     InvalidSignature = 7,
 }
 
+// ── Meta-transaction payload ──────────────────────────────────────────────────
+
+/// Structured payload for meta-transactions with relayer gas fee compensation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetaPayment {
+    pub nonce: u64,
+    pub deadline: u64,
+    pub sender: Address,
+    pub recipient: Address,
+    pub token_address: Address,
+    pub amount: i128,
+    pub fee: i128,
+    pub fee_recipient: Address,
+}
+
+pub type MetaPaymentPayload = MetaPayment;
+pub type MetaTransaction = MetaPayment;
+
 // ── TTL helpers ───────────────────────────────────────────────────────────────
 
 const DAY_IN_LEDGERS: u32 = 17_280; // ≈5 s per ledger
@@ -1684,5 +1703,489 @@ mod tests {
         let results = client.execute_batch_tolerant(&soroban_sdk::vec![&env, call0, call1]);
         assert_eq!(results, soroban_sdk::vec![&env, true, true]);
         assert_eq!(client.get_nonce(&user), 2);
+    }
+
+    // ── Meta-transaction tests with relayer fee compensation ───────────────────
+
+    fn setup_token(
+        env: &Env,
+    ) -> (
+        Address,
+        token::Client<'static>,
+        token::StellarAssetClient<'static>,
+    ) {
+        let token_admin = Address::generate(env);
+        let token_address = env.register_stellar_asset_contract(token_admin);
+        let token_client = token::Client::new(env, &token_address);
+        let token_admin_client = token::StellarAssetClient::new(env, &token_address);
+        (token_address, token_client, token_admin_client)
+    }
+
+    fn sign_meta_payload(
+        env: &Env,
+        contract_id: &Address,
+        payload: &MetaPayment,
+        signer_pubkey: &BytesN<32>,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> BytesN<64> {
+        use ed25519_dalek::Signer;
+        let mut msg = Bytes::new(env);
+        msg.append(&contract_id.to_xdr(env));
+        msg.append(&payload.to_xdr(env));
+        msg.append(&Bytes::from_slice(env, &signer_pubkey.to_array()));
+        let hash = env.crypto().sha256(&msg);
+        let hash_bytes = Bytes::from(&hash);
+        let mut buf = [0u8; 32];
+        hash_bytes.copy_into_slice(&mut buf);
+        let sig = signing_key.sign(&buf);
+        BytesN::from_array(env, &sig.to_bytes())
+    }
+
+    fn set_timestamp(env: &Env, timestamp: u64) {
+        use soroban_sdk::testutils::LedgerInfo;
+        env.ledger().set(LedgerInfo {
+            timestamp,
+            protocol_version: env.ledger().protocol_version(),
+            sequence_number: env.ledger().sequence(),
+            network_id: env.ledger().network_id().into(),
+            base_reserve: 100,
+            min_temp_entry_ttl: 16,
+            min_persistent_entry_ttl: 4096,
+            max_entry_ttl: 6312000,
+        });
+    }
+
+    /// User signs payload; proxy atomically transfers fee to relayer and net amount to destination.
+    #[test]
+    fn test_meta_payment_dual_transfer_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[1u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let amount = 1_000i128;
+        let fee = 50i128;
+        let nonce = client.get_meta_nonce(&sender);
+        assert_eq!(nonce, 0);
+        let deadline = env.ledger().timestamp() + 3600;
+
+        let payload = MetaPayment {
+            nonce,
+            deadline,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount,
+            fee,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        client.execute_meta_payment(&payload, &pubkey, &signature);
+
+        assert_eq!(client.get_meta_nonce(&sender), 1);
+        assert_eq!(token_client.balance(&recipient), 1_000);
+        assert_eq!(token_client.balance(&relayer), 50);
+        assert_eq!(token_client.balance(&sender), 10_000 - 1_050);
+    }
+
+    /// Verify relayer cannot alter the fee parameter without invalidating the user's signature.
+    #[test]
+    fn test_relayer_cannot_alter_fee_parameter() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[2u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let amount = 1_000i128;
+        let fee = 50i128;
+        let nonce = client.get_meta_nonce(&sender);
+        let deadline = env.ledger().timestamp() + 3600;
+
+        let payload = MetaPayment {
+            nonce,
+            deadline,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount,
+            fee,
+            fee_recipient: relayer.clone(),
+        };
+
+        // User signs the legitimate payload
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        // Malicious relayer attempts to alter fee parameter to 500
+        let mut tampered_payload = payload.clone();
+        tampered_payload.fee = 500;
+
+        let res = client.try_execute_meta_payment(&tampered_payload, &pubkey, &signature);
+        assert!(res.is_err(), "relayer altering fee must be rejected");
+
+        // State remains completely unmodified
+        assert_eq!(client.get_meta_nonce(&sender), 0);
+        assert_eq!(token_client.balance(&sender), 10_000);
+        assert_eq!(token_client.balance(&recipient), 0);
+        assert_eq!(token_client.balance(&relayer), 0);
+
+        // Legitimate payload succeeds
+        client.execute_meta_payment(&payload, &pubkey, &signature);
+        assert_eq!(client.get_meta_nonce(&sender), 1);
+        assert_eq!(token_client.balance(&recipient), 1_000);
+        assert_eq!(token_client.balance(&relayer), 50);
+        assert_eq!(token_client.balance(&sender), 8_950);
+    }
+
+    /// Verify relayer cannot alter recipient or amount parameters.
+    #[test]
+    fn test_relayer_cannot_alter_other_payload_parameters() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+        let attacker = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline: env.ledger().timestamp() + 3600,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 1_000,
+            fee: 50,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        // Relayer tries to redirect funds to attacker
+        let mut tampered_recipient = payload.clone();
+        tampered_recipient.recipient = attacker.clone();
+        let res = client.try_execute_meta_payment(&tampered_recipient, &pubkey, &signature);
+        assert!(res.is_err(), "altering recipient must fail signature verification");
+
+        // Relayer tries to inflate amount
+        let mut tampered_amount = payload.clone();
+        tampered_amount.amount = 5_000;
+        let res = client.try_execute_meta_payment(&tampered_amount, &pubkey, &signature);
+        assert!(res.is_err(), "altering amount must fail signature verification");
+
+        // Balances untouched
+        assert_eq!(token_client.balance(&sender), 10_000);
+        assert_eq!(token_client.balance(&recipient), 0);
+        assert_eq!(token_client.balance(&attacker), 0);
+    }
+
+    /// Proxy verifies user balance covers amount + fee.
+    #[test]
+    fn test_meta_payment_verifies_balance_covers_amount_plus_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        // User has only 1,000 tokens
+        sac.mint(&sender, &1_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[4u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        // Amount 980 + fee 50 = 1030 > balance 1000
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline: env.ledger().timestamp() + 3600,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 980,
+            fee: 50,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        let res = client.try_execute_meta_payment(&payload, &pubkey, &signature);
+        assert_eq!(res, Err(Ok(ProxyError::InsufficientBalance)));
+
+        assert_eq!(token_client.balance(&sender), 1_000);
+        assert_eq!(token_client.balance(&recipient), 0);
+        assert_eq!(token_client.balance(&relayer), 0);
+    }
+
+    /// Proxy verifies user allowance covers amount + fee.
+    #[test]
+    fn test_meta_payment_verifies_allowance_covers_amount_plus_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        // User approved only 500, but amount + fee = 550
+        token_client.approve(&sender, &proxy_id, &500, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline: env.ledger().timestamp() + 3600,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 500,
+            fee: 50,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        let res = client.try_execute_meta_payment(&payload, &pubkey, &signature);
+        assert_eq!(res, Err(Ok(ProxyError::InsufficientAllowance)));
+
+        assert_eq!(token_client.balance(&sender), 10_000);
+        assert_eq!(token_client.balance(&recipient), 0);
+        assert_eq!(token_client.balance(&relayer), 0);
+    }
+
+    /// Replay of an already executed meta-transaction payload is rejected.
+    #[test]
+    fn test_meta_payment_replay_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[6u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline: env.ledger().timestamp() + 3600,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 500,
+            fee: 20,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        client.execute_meta_payment(&payload, &pubkey, &signature);
+        assert_eq!(client.get_meta_nonce(&sender), 1);
+
+        // Attempting to replay same payload fails with InvalidNonce
+        let res = client.try_execute_meta_payment(&payload, &pubkey, &signature);
+        assert_eq!(res, Err(Ok(ProxyError::InvalidNonce)));
+    }
+
+    /// Meta-transaction with expired deadline is rejected.
+    #[test]
+    fn test_meta_payment_deadline_expired() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let deadline = env.ledger().timestamp() + 10;
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 500,
+            fee: 20,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        set_timestamp(&env, deadline + 100);
+
+        let res = client.try_execute_meta_payment(&payload, &pubkey, &signature);
+        assert_eq!(res, Err(Ok(ProxyError::DeadlineExpired)));
+    }
+
+    /// Zero fee is supported for altruistic or sponsored relayers.
+    #[test]
+    fn test_meta_payment_zero_fee_supported() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[8u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline: env.ledger().timestamp() + 3600,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 700,
+            fee: 0,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        client.execute_meta_payment(&payload, &pubkey, &signature);
+
+        assert_eq!(client.get_meta_nonce(&sender), 1);
+        assert_eq!(token_client.balance(&recipient), 700);
+        assert_eq!(token_client.balance(&relayer), 0);
+        assert_eq!(token_client.balance(&sender), 10_000 - 700);
+    }
+
+    /// route_payment_meta functions identically to execute_meta_payment.
+    #[test]
+    fn test_route_payment_meta_alias() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let logic = Address::generate(&env);
+        let proxy_id = env.register_contract(None, PaymentProxy);
+        let client = PaymentProxyClient::new(&env, &proxy_id);
+        client.initialize(&admin, &logic);
+
+        let (token_address, token_client, sac) = setup_token(&env);
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let relayer = Address::generate(&env);
+
+        sac.mint(&sender, &10_000);
+        token_client.approve(&sender, &proxy_id, &10_000, &1_000_000);
+
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let pubkey = BytesN::from_array(&env, &signing_key.verifying_key().to_bytes());
+
+        let payload = MetaPayment {
+            nonce: 0,
+            deadline: env.ledger().timestamp() + 3600,
+            sender: sender.clone(),
+            recipient: recipient.clone(),
+            token_address: token_address.clone(),
+            amount: 800,
+            fee: 40,
+            fee_recipient: relayer.clone(),
+        };
+
+        let signature = sign_meta_payload(&env, &proxy_id, &payload, &pubkey, &signing_key);
+
+        client.route_payment_meta(&payload, &pubkey, &signature);
+
+        assert_eq!(client.get_meta_nonce(&sender), 1);
+        assert_eq!(token_client.balance(&recipient), 800);
+        assert_eq!(token_client.balance(&relayer), 40);
+        assert_eq!(token_client.balance(&sender), 10_000 - 840);
     }
 }
