@@ -114,7 +114,7 @@ min_amount_out: i128;
  * Each variant carries all the arguments needed to apply that change when the
  * delay period is over.
  */
-export type ActionType = {tag: "SetPlatformTreasury", values: readonly [string]} | {tag: "SetFeeConfig", values: readonly [i128, i128]} | {tag: "SetFeeBps", values: readonly [i128]} | {tag: "SetGovernance", values: readonly [string]} | {tag: "SetMinLimit", values: readonly [i128]} | {tag: "TransferAdmin", values: readonly [string]} | {tag: "Upgrade", values: readonly [Buffer]} | {tag: "SetBackupAdmin", values: readonly [string, u64]} | {tag: "RegisterDex", values: readonly [string]} | {tag: "DeregisterDex", values: readonly [string]} | {tag: "SetMaxSlippageBps", values: readonly [i128]} | {tag: "SetMultisigConfig", values: readonly [Array<string>, u32]};
+export type ActionType = {tag: "SetPlatformTreasury", values: readonly [string]} | {tag: "SetFeeConfig", values: readonly [i128, i128]} | {tag: "SetFeeBps", values: readonly [i128]} | {tag: "SetGovernance", values: readonly [string]} | {tag: "SetMinLimit", values: readonly [i128]} | {tag: "TransferAdmin", values: readonly [string]} | {tag: "Upgrade", values: readonly [Buffer]} | {tag: "SetBackupAdmin", values: readonly [string, u64]} | {tag: "RegisterDex", values: readonly [string]} | {tag: "DeregisterDex", values: readonly [string]} | {tag: "SetMaxSlippageBps", values: readonly [i128]} | {tag: "SetPairMaxSlippageBps", values: readonly [string, string, i128]} | {tag: "SetMultisigConfig", values: readonly [Array<string>, u32]};
 
 
 /**
@@ -1342,6 +1342,9 @@ export interface Client {
    */
   get_max_slippage_bps: (options?: MethodOptions) => Promise<AssembledTransaction<i128>>
 
+  /** Construct and simulate a get_pair_max_slippage_bps transaction. */
+  get_pair_max_slippage_bps: ({token_in, token_out}: {token_in: string, token_out: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<i128>>>
+
   /**
    * Construct and simulate a set_max_slippage_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Sets the maximum tolerated swap slippage. Admin-only.
@@ -1365,6 +1368,9 @@ export interface Client {
    * and execute after 24 hours.
    */
   set_max_slippage_bps: ({max_slippage_bps}: {max_slippage_bps: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /** Sets a pair-specific swap slippage ceiling (0 through 500 bps). */
+  set_pair_max_slippage_bps: ({token_in, token_out, max_slippage_bps}: {token_in: string, token_out: string, max_slippage_bps: i128}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a get_effective_fee_bps transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -1624,7 +1630,9 @@ export class Client extends ContractClient {
         configure_governance: this.txFromJSON<Result<void>>,
         get_dead_mans_switch: this.txFromJSON<readonly [Option<string>, u64, u64, u64]>,
         get_max_slippage_bps: this.txFromJSON<i128>,
+        get_pair_max_slippage_bps: this.txFromJSON<Result<i128>>,
         set_max_slippage_bps: this.txFromJSON<Result<void>>,
+        set_pair_max_slippage_bps: this.txFromJSON<Result<void>>,
         get_effective_fee_bps: this.txFromJSON<i128>,
         get_upgrade_approvals: this.txFromJSON<Array<string>>,
         is_upgrade_authorized: this.txFromJSON<Result<boolean>>,

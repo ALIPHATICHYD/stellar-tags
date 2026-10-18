@@ -188,6 +188,15 @@ pub fn prepare_cross_contract_upgrade(
         if confirmed != not_before {
             return Err(Error::UpgradePrepareFailed);
         }
+        ActionType::SetPairMaxSlippageBps(token_in, token_out, bps) => {
+            let key = DataKey::PairSlippage(token_in, token_out);
+            env.storage().persistent().set(&key, &bps);
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
     }
 
     let manifest = TwoPhaseCommit {
