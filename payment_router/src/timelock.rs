@@ -39,8 +39,21 @@ pub fn apply_action(env: &Env, action: ActionType) -> Result<(), Error> {
         ActionType::SetBackupAdmin(backup, timeout_seconds) => {
             PaymentRouter::apply_set_backup_admin(env, backup, timeout_seconds)?;
         }
-        ActionType::SetTieredDeadMansSwitch(backup, tier1_timeout, council, threshold, tier2_timeout) => {
-            PaymentRouter::apply_set_tiered_dead_mans_switch(env, backup, tier1_timeout, council, threshold, tier2_timeout)?;
+        ActionType::SetTieredDeadMansSwitch(
+            backup,
+            tier1_timeout,
+            council,
+            threshold,
+            tier2_timeout,
+        ) => {
+            PaymentRouter::apply_set_tiered_dead_mans_switch(
+                env,
+                backup,
+                tier1_timeout,
+                council,
+                threshold,
+                tier2_timeout,
+            )?;
         }
         ActionType::Upgrade(new_wasm_hash) => {
             apply_upgrade(env, &new_wasm_hash);
@@ -69,10 +82,9 @@ pub fn apply_action(env: &Env, action: ActionType) -> Result<(), Error> {
         }
     }
 
-    env.storage().instance().extend_ttl(
-        INSTANCE_LIFETIME_THRESHOLD,
-        INSTANCE_BUMP_AMOUNT,
-    );
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
     Ok(())
 }
@@ -183,10 +195,8 @@ pub fn execute_batch_actions(env: &Env, nonces: Vec<u64>) -> Result<(), Error> {
     }
 
     // Phase 3: Emit batch_actions_executed event with list of nonces.
-    env.events().publish(
-        (Symbol::new(env, "batch_actions_executed"), admin),
-        nonces,
-    );
+    env.events()
+        .publish((Symbol::new(env, "batch_actions_executed"), admin), nonces);
 
     Ok(())
 }

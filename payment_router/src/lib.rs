@@ -1,13 +1,13 @@
 #![no_std]
 pub mod access;
 mod archival;
+pub mod dead_mans_switch;
 pub mod errors;
 pub mod fees;
 pub mod rate_limit;
 pub mod storage;
 pub mod timelock;
 pub mod types;
-pub mod dead_mans_switch;
 
 pub use access::*;
 use archival::{ArchiveLeaf, ArchiveMetadata, ArchiveRecordType};
@@ -1790,7 +1790,9 @@ impl PaymentRouter {
 
         // Clear any pending in-flight claim or council approvals
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
-        env.storage().instance().remove(&DataKey::DmsCouncilApprovals);
+        env.storage()
+            .instance()
+            .remove(&DataKey::DmsCouncilApprovals);
 
         // The claim clock starts ticking from the moment the switch is armed.
         env.storage()
@@ -1803,7 +1805,12 @@ impl PaymentRouter {
 
         env.events().publish(
             (Symbol::new(env, "tiered_dms_set"), admin),
-            (backup, tier1_timeout_seconds, threshold, tier2_timeout_seconds),
+            (
+                backup,
+                tier1_timeout_seconds,
+                threshold,
+                tier2_timeout_seconds,
+            ),
         );
 
         log!(env, "Tiered dead man's switch armed");
@@ -1825,7 +1832,9 @@ impl PaymentRouter {
         env.storage().instance().remove(&DataKey::DmsTier2Threshold);
         env.storage().instance().remove(&DataKey::DmsTier2Timeout);
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
-        env.storage().instance().remove(&DataKey::DmsCouncilApprovals);
+        env.storage()
+            .instance()
+            .remove(&DataKey::DmsCouncilApprovals);
 
         env.storage().instance().extend_ttl(
             Self::INSTANCE_LIFETIME_THRESHOLD,
@@ -2438,7 +2447,10 @@ impl PaymentRouter {
             (1u32, now, grace_period_end),
         );
 
-        log!(&env, "Tier 1 dead man's switch claim initiated via claim_admin");
+        log!(
+            &env,
+            "Tier 1 dead man's switch claim initiated via claim_admin"
+        );
         Ok(())
     }
 
@@ -2497,8 +2509,9 @@ impl PaymentRouter {
                 .instance()
                 .get(&DataKey::DmsTimeout)
                 .unwrap_or(0);
-            let tier1_exclusive_until =
-                last_heartbeat.saturating_add(tier1_timeout).saturating_add(Self::TIER1_EXCLUSIVE_WINDOW);
+            let tier1_exclusive_until = last_heartbeat
+                .saturating_add(tier1_timeout)
+                .saturating_add(Self::TIER1_EXCLUSIVE_WINDOW);
             if now < tier1_exclusive_until {
                 return Err(Error::DmsTier2NotEligible);
             }
@@ -2581,10 +2594,8 @@ impl PaymentRouter {
             Self::INSTANCE_BUMP_AMOUNT,
         );
 
-        env.events().publish(
-            (Symbol::new(&env, "tier2_claim_approved"), signer),
-            count,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "tier2_claim_approved"), signer), count);
 
         log!(&env, "Tier 2 claim approval registered");
         Ok(count)
@@ -2640,7 +2651,9 @@ impl PaymentRouter {
         }
 
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
-        env.storage().instance().remove(&DataKey::DmsCouncilApprovals);
+        env.storage()
+            .instance()
+            .remove(&DataKey::DmsCouncilApprovals);
 
         // Reset the heartbeat clock to now
         let now = env.ledger().timestamp();
@@ -2651,10 +2664,8 @@ impl PaymentRouter {
             Self::INSTANCE_BUMP_AMOUNT,
         );
 
-        env.events().publish(
-            (Symbol::new(&env, "dms_rearmed"), admin),
-            now,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "dms_rearmed"), admin), now);
 
         log!(&env, "Dead man's switch rearmed by admin");
         Ok(())
@@ -2678,17 +2689,17 @@ impl PaymentRouter {
         env.storage().instance().remove(&DataKey::DmsTier2Threshold);
         env.storage().instance().remove(&DataKey::DmsTier2Timeout);
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
-        env.storage().instance().remove(&DataKey::DmsCouncilApprovals);
+        env.storage()
+            .instance()
+            .remove(&DataKey::DmsCouncilApprovals);
 
         env.storage().instance().extend_ttl(
             Self::INSTANCE_LIFETIME_THRESHOLD,
             Self::INSTANCE_BUMP_AMOUNT,
         );
 
-        env.events().publish(
-            (Symbol::new(env, "admin_claimed"), new_admin),
-            (tier, now),
-        );
+        env.events()
+            .publish((Symbol::new(env, "admin_claimed"), new_admin), (tier, now));
 
         log!(env, "Admin claimed via dead man's switch");
         Ok(())
@@ -2748,7 +2759,8 @@ impl PaymentRouter {
             .get(&DataKey::LastHeartbeat)
             .unwrap_or(0);
         let now = env.ledger().timestamp();
-        let elapsed = if backup.is_some() || env.storage().instance().has(&DataKey::DmsTier2Council) {
+        let elapsed = if backup.is_some() || env.storage().instance().has(&DataKey::DmsTier2Council)
+        {
             now.saturating_sub(last)
         } else {
             0
