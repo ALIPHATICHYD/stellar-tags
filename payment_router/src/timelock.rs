@@ -29,14 +29,201 @@
 //! `commit_upgrade(upgrade_id, code_hash) -> BytesN<32>` (Phase 2, echoing the
 //! applied code hash).
 
-use soroban_sdk::{contracttype, log, IntoVal, Symbol, Vec};
-
-use soroban_sdk::{Address, BytesN, Env};
+use crate::access::{
+    apply_upgrade, is_frozen_internal, require_admin, require_circuit_closed, set_role_internal,
+    store_multisig_config, validate_queued_action,
+};
+use crate::errors::Error;
+use crate::storage::{
+    DataKey, Role, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+    PERSISTENT_LIFETIME_THRESHOLD, SECONDS_IN_24H,
+};
+use crate::types::{ActionType, TimelockEntry};
+use crate::PaymentRouter;
+use soroban_sdk::{contracttype, log, Address, BytesN, Env, IntoVal, Symbol, Vec};
 
 #[cfg(test)]
 use soroban_sdk::{contract, contracterror, contractimpl};
 
-use crate::{DataKey, Error};
+/// Applies an administrative parameter change to the contract state.
+pub fn apply_action(env: &Env, action: ActionType) -> Result<(), Error> {
+    match action {
+        ActionType::SetPlatformTreasury(new_treasury) => {
+            env.storage()
+                .instance()
+                .set(&DataKey::PlatformTreasury, &new_treasury);
+        }
+        ActionType::SetFeeConfig(fee_bps, fee_cap) => {
+            env.storage().instance().set(&DataKey::FeeBps, &fee_bps);
+            env.storage().instance().set(&DataKey::FeeCap, &fee_cap);
+        }
+        ActionType::SetFeeBps(new_fee_bps) => {
+            env.storage().instance().set(&DataKey::FeeBps, &new_fee_bps);
+        }
+        ActionType::SetGovernance(gov) => {
+            env.storage().instance().set(&DataKey::Governance, &gov);
+        }
+        ActionType::SetMinLimit(min_limit) => {
+            env.storage().instance().set(&DataKey::MinLimit, &min_limit);
+        }
+        ActionType::TransferAdmin(new_admin) => {
+            env.storage().instance().set(&DataKey::Admin, &new_admin);
+            set_role_internal(env, Role::SuperAdmin, &new_admin);
+        }
+        ActionType::SetBackupAdmin(backup, timeout_seconds) => {
+            PaymentRouter::apply_set_backup_admin(env, backup, timeout_seconds)?;
+        }
+        ActionType::Upgrade(new_wasm_hash) => {
+            apply_upgrade(env, &new_wasm_hash);
+        }
+        ActionType::SetMultisigConfig(signers, threshold) => {
+            store_multisig_config(env, signers, threshold);
+        }
+        ActionType::RegisterDex(dex) => {
+            let key = DataKey::RegisteredDex(dex.clone());
+            env.storage().persistent().set(&key, &true);
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+        ActionType::DeregisterDex(dex) => {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::RegisteredDex(dex.clone()));
+        }
+        ActionType::SetMaxSlippageBps(max_slippage_bps) => {
+            env.storage()
+                .instance()
+                .set(&DataKey::MaxSlippageBps, &max_slippage_bps);
+        }
+        ActionType::SetPairMaxSlippageBps(token_in, token_out, bps) => {
+            let key = DataKey::PairSlippage(token_in, token_out);
+            env.storage().persistent().set(&key, &bps);
+            env.storage().persistent().extend_ttl(
+                &key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+    }
+
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+    Ok(())
+}
+
+/// Executes a previously queued timelock action identified by `nonce`.
+pub fn execute_action(env: &Env, nonce: u64) -> Result<(), Error> {
+    if is_frozen_internal(env) {
+        return Err(Error::ContractFrozen);
+    }
+    require_circuit_closed(env)?;
+
+    let admin = require_admin(env)?;
+    admin.require_auth();
+
+    let key = DataKey::TimelockEntry(nonce);
+    let entry: TimelockEntry = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .ok_or(Error::TimelockNotFound)?;
+
+    let now = env.ledger().timestamp();
+    if now < entry.queued_at + SECONDS_IN_24H {
+        return Err(Error::TimelockNotReady);
+    }
+
+    validate_queued_action(env, &entry.action)?;
+
+    env.storage().persistent().remove(&key);
+
+    apply_action(env, entry.action)?;
+
+    env.events()
+        .publish((Symbol::new(env, "action_executed"), admin), nonce);
+
+    log!(env, "Timelock action executed for nonce {}", nonce);
+    Ok(())
+}
+
+/// Executes a batch of previously queued timelock actions sequentially within a
+/// single atomic invocation.
+///
+/// Acceptance criteria:
+/// - All nonces in the batch are verified ready (delay elapsed, exists, valid)
+///   before executing the first action.
+/// - Atomic rollback if any action in the batch fails execution.
+/// - Emits `batch_actions_executed` event with the list of nonces.
+pub fn execute_batch_actions(env: &Env, nonces: Vec<u64>) -> Result<(), Error> {
+    if is_frozen_internal(env) {
+        return Err(Error::ContractFrozen);
+    }
+    require_circuit_closed(env)?;
+
+    let admin = require_admin(env)?;
+    admin.require_auth();
+
+    if nonces.is_empty() {
+        return Ok(());
+    }
+
+    // Verify all nonces are unique in the batch.
+    let mut seen: Vec<u64> = Vec::new(env);
+    for nonce in nonces.iter() {
+        if seen.contains(nonce) {
+            return Err(Error::TimelockNotFound);
+        }
+        seen.push_back(nonce);
+    }
+
+    let now = env.ledger().timestamp();
+    let mut entries = Vec::new(env);
+
+    // Phase 1: Verify all actions in the batch are ready and unexpired BEFORE executing the first action.
+    for nonce in nonces.iter() {
+        let key = DataKey::TimelockEntry(nonce);
+        let entry: TimelockEntry = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::TimelockNotFound)?;
+
+        if now < entry.queued_at + SECONDS_IN_24H {
+            return Err(Error::TimelockNotReady);
+        }
+
+        validate_queued_action(env, &entry.action)?;
+        entries.push_back(entry);
+    }
+
+    // Phase 2: Execute all actions sequentially within a single atomic invocation.
+    for (nonce, entry) in nonces.iter().zip(entries.iter()) {
+        let key = DataKey::TimelockEntry(nonce);
+
+        // Remove the entry before applying the action (checks-effects-interactions).
+        env.storage().persistent().remove(&key);
+
+        apply_action(env, entry.action)?;
+
+        env.events()
+            .publish((Symbol::new(env, "action_executed"), admin.clone()), nonce);
+
+        log!(env, "Timelock action executed for nonce {}", nonce);
+    }
+
+    // Phase 3: Emit batch_actions_executed event with list of nonces.
+    env.events()
+        .publish((Symbol::new(env, "batch_actions_executed"), admin), nonces);
+
+    Ok(())
+}
+
+// ── Two-phase commit: cross-contract timelocked upgrades ────────────────────
 
 /// Mandatory timelock enforced by Phase 1 across *all* participating
 /// contracts: no manifest may be committed before `prepared_at + 48h`.
@@ -51,13 +238,6 @@ const PREPARE_HOOK: &str = "prepare_upgrade";
 
 /// Phase 2 hook every participating contract must expose.
 const COMMIT_HOOK: &str = "commit_upgrade";
-
-const DAY_IN_LEDGERS: u32 = 17_280;
-
-const INSTANCE_BUMP_AMOUNT: u32 = 7 * DAY_IN_LEDGERS;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
-const PERSISTENT_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 /// A prepared cross-contract upgrade waiting for its 48-hour timelock to
 /// elapse.  Stored under [`DataKey::TwoPhaseCommit`] keyed by `upgrade_id`.
@@ -79,22 +259,6 @@ pub struct TwoPhaseCommit {
     pub execution_deadline: u64,
 }
 
-/// Returns whether the contract is currently frozen.
-fn is_frozen(env: &Env) -> bool {
-    env.storage()
-        .instance()
-        .get(&DataKey::Frozen)
-        .unwrap_or(false)
-}
-
-/// Returns the admin address, or `NotInitialized` if none is set.
-fn require_admin(env: &Env) -> Result<Address, Error> {
-    env.storage()
-        .instance()
-        .get(&DataKey::Admin)
-        .ok_or(Error::NotInitialized)
-}
-
 /// Checks a stored manifest before Phase 2 may talk to any contract.
 ///
 /// Every participating entry has to satisfy the delay and deadline checks, so
@@ -109,7 +273,7 @@ fn validate_manifest(env: &Env, manifest: &TwoPhaseCommit) -> Result<(), Error> 
 
     let now = env.ledger().timestamp();
     if now < manifest.prepared_at.saturating_add(TIMELOCK_DELAY_SECONDS) {
-        return Err(Error::UpgradeNotReady);
+        return Err(Error::TimelockNotReady);
     }
     if now > manifest.execution_deadline {
         return Err(Error::UpgradeManifestExpired);
@@ -137,7 +301,7 @@ pub fn prepare_cross_contract_upgrade(
     contract_addresses: Vec<Address>,
     code_hashes: Vec<BytesN<32>>,
 ) -> Result<TwoPhaseCommit, Error> {
-    if is_frozen(env) {
+    if is_frozen_internal(env) {
         return Err(Error::ContractFrozen);
     }
     let admin = require_admin(env)?;
@@ -159,7 +323,7 @@ pub fn prepare_cross_contract_upgrade(
 
     let key = DataKey::TwoPhaseCommit(upgrade_id.clone());
     if env.storage().persistent().has(&key) {
-        return Err(Error::UpgradeAlreadyPrepared);
+        return Err(Error::TimelockPending);
     }
 
     let prepared_at = env.ledger().timestamp();
@@ -187,15 +351,6 @@ pub fn prepare_cross_contract_upgrade(
         };
         if confirmed != not_before {
             return Err(Error::UpgradePrepareFailed);
-        }
-        ActionType::SetPairMaxSlippageBps(token_in, token_out, bps) => {
-            let key = DataKey::PairSlippage(token_in, token_out);
-            env.storage().persistent().set(&key, &bps);
-            env.storage().persistent().extend_ttl(
-                &key,
-                PERSISTENT_LIFETIME_THRESHOLD,
-                PERSISTENT_BUMP_AMOUNT,
-            );
         }
     }
 
@@ -244,7 +399,7 @@ pub fn prepare_cross_contract_upgrade(
 ///
 /// Admin authorization is required and the contract must not be frozen.
 pub fn commit_cross_contract_upgrade(env: &Env, upgrade_id: BytesN<32>) -> Result<(), Error> {
-    if is_frozen(env) {
+    if is_frozen_internal(env) {
         return Err(Error::ContractFrozen);
     }
     let admin = require_admin(env)?;
@@ -255,7 +410,7 @@ pub fn commit_cross_contract_upgrade(env: &Env, upgrade_id: BytesN<32>) -> Resul
         .storage()
         .persistent()
         .get(&key)
-        .ok_or(Error::UpgradeManifestNotFound)?;
+        .ok_or(Error::TimelockNotFound)?;
 
     // Validate every manifest entry up-front, before touching any contract.
     validate_manifest(env, &manifest)?;
@@ -311,7 +466,7 @@ pub fn commit_cross_contract_upgrade(env: &Env, upgrade_id: BytesN<32>) -> Resul
 }
 
 /// Returns the prepared [`TwoPhaseCommit`] manifest for `upgrade_id`, or
-/// `UpgradeManifestNotFound` if it does not exist (never prepared, already
+/// [`Error::TimelockNotFound`] if it does not exist (never prepared, already
 /// committed, or no longer in the execution window storage).
 pub fn get_cross_contract_upgrade(
     env: &Env,
@@ -320,7 +475,7 @@ pub fn get_cross_contract_upgrade(
     env.storage()
         .persistent()
         .get(&DataKey::TwoPhaseCommit(upgrade_id))
-        .ok_or(Error::UpgradeManifestNotFound)
+        .ok_or(Error::TimelockNotFound)
 }
 
 // ── Test-only participating contract ────────────────────────────────────────
@@ -545,11 +700,11 @@ mod tests {
 
         // Immediately, and again one second short of the delay: not ready.
         let res = client.try_commit_cross_contract_upgrade(&id);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeNotReady);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockNotReady);
 
         advance(&env, TIMELOCK_DELAY_SECONDS - 1);
         let res = client.try_commit_cross_contract_upgrade(&id);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeNotReady);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockNotReady);
 
         // No contract was touched and the manifest survives for the retry.
         assert!(!a.is_applied());
@@ -581,9 +736,9 @@ mod tests {
 
         // The manifest is consumed, so the upgrade is single-use.
         let res = client.try_get_cross_contract_upgrade(&id);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeManifestNotFound);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockNotFound);
         let res = client.try_commit_cross_contract_upgrade(&id);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeManifestNotFound);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockNotFound);
     }
 
     #[test]
@@ -669,9 +824,9 @@ mod tests {
 
         // None of the rejected attempts left state behind.
         let res = client.try_get_cross_contract_upgrade(&id);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeManifestNotFound);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockNotFound);
         let res = client.try_commit_cross_contract_upgrade(&id);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeManifestNotFound);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockNotFound);
     }
 
     #[test]
@@ -684,6 +839,6 @@ mod tests {
         client.prepare_cross_contract_upgrade(&id, &addresses, &hashes);
 
         let res = client.try_prepare_cross_contract_upgrade(&id, &addresses, &hashes);
-        assert_eq!(res.unwrap_err().unwrap(), Error::UpgradeAlreadyPrepared);
+        assert_eq!(res.unwrap_err().unwrap(), Error::TimelockPending);
     }
 }

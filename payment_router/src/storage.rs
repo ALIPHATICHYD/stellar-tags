@@ -141,6 +141,10 @@ pub enum DataKey {
     UpgradeApproval(BytesN<32>),
     /// Guard against cross-contract reentrancy attacks.
     ReentrancyGuard,
+    /// A prepared two-phase cross-contract upgrade manifest, keyed by its
+    /// upgrade ID. Stored in persistent storage so it survives instance
+    /// eviction while the timelock runs.
+    TwoPhaseCommit(BytesN<32>),
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
