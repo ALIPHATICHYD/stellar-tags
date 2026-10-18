@@ -1781,12 +1781,10 @@ impl PaymentRouter {
         env.storage()
             .instance()
             .set(&DataKey::DmsTier2Council, &council);
-        env.storage()
-            .instance()
-            .set(&DataKey::DmsTier2Threshold, &threshold);
-        env.storage()
-            .instance()
-            .set(&DataKey::DmsTier2Timeout, &tier2_timeout_seconds);
+        env.storage().instance().set(
+            &DataKey::DmsTier2Config,
+            &(threshold, tier2_timeout_seconds),
+        );
 
         // Clear any pending in-flight claim or council approvals
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
@@ -1829,8 +1827,7 @@ impl PaymentRouter {
         env.storage().instance().remove(&DataKey::LastHeartbeat);
         env.storage().instance().remove(&DataKey::DmsTimeout);
         env.storage().instance().remove(&DataKey::DmsTier2Council);
-        env.storage().instance().remove(&DataKey::DmsTier2Threshold);
-        env.storage().instance().remove(&DataKey::DmsTier2Timeout);
+        env.storage().instance().remove(&DataKey::DmsTier2Config);
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
         env.storage()
             .instance()
@@ -2359,7 +2356,7 @@ impl PaymentRouter {
             .storage()
             .instance()
             .get(&DataKey::DmsPendingClaim)
-            .ok_or(Error::DmsNoClaimPending)?;
+            .ok_or(Error::TimelockNotFound)?;
 
         if pending.tier != 1 {
             return Err(Error::Unauthorized);
@@ -2486,10 +2483,10 @@ impl PaymentRouter {
             .instance()
             .get(&DataKey::LastHeartbeat)
             .ok_or(Error::InvalidDmsConfig)?;
-        let tier2_timeout: u64 = env
+        let (_threshold, tier2_timeout): (u32, u64) = env
             .storage()
             .instance()
-            .get(&DataKey::DmsTier2Timeout)
+            .get(&DataKey::DmsTier2Config)
             .ok_or(Error::InvalidDmsConfig)?;
 
         let now = env.ledger().timestamp();
@@ -2513,7 +2510,7 @@ impl PaymentRouter {
                 .saturating_add(tier1_timeout)
                 .saturating_add(Self::TIER1_EXCLUSIVE_WINDOW);
             if now < tier1_exclusive_until {
-                return Err(Error::DmsTier2NotEligible);
+                return Err(Error::DmsNotReady);
             }
         }
 
@@ -2567,7 +2564,7 @@ impl PaymentRouter {
             .storage()
             .instance()
             .get(&DataKey::DmsPendingClaim)
-            .ok_or(Error::DmsNoClaimPending)?;
+            .ok_or(Error::TimelockNotFound)?;
 
         if pending.tier != 2 {
             return Err(Error::Unauthorized);
@@ -2609,7 +2606,7 @@ impl PaymentRouter {
             .storage()
             .instance()
             .get(&DataKey::DmsPendingClaim)
-            .ok_or(Error::DmsNoClaimPending)?;
+            .ok_or(Error::TimelockNotFound)?;
 
         if pending.tier != 2 {
             return Err(Error::Unauthorized);
@@ -2620,10 +2617,10 @@ impl PaymentRouter {
             return Err(Error::DmsGracePeriodActive);
         }
 
-        let threshold: u32 = env
+        let (threshold, _timeout): (u32, u64) = env
             .storage()
             .instance()
-            .get(&DataKey::DmsTier2Threshold)
+            .get(&DataKey::DmsTier2Config)
             .ok_or(Error::InvalidMultisigConfig)?;
         let approvals: Vec<Address> = env
             .storage()
@@ -2647,7 +2644,7 @@ impl PaymentRouter {
 
         let pending_exists = env.storage().instance().has(&DataKey::DmsPendingClaim);
         if !pending_exists {
-            return Err(Error::DmsNoClaimPending);
+            return Err(Error::TimelockNotFound);
         }
 
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
@@ -2686,8 +2683,7 @@ impl PaymentRouter {
         env.storage().instance().remove(&DataKey::LastHeartbeat);
         env.storage().instance().remove(&DataKey::DmsTimeout);
         env.storage().instance().remove(&DataKey::DmsTier2Council);
-        env.storage().instance().remove(&DataKey::DmsTier2Threshold);
-        env.storage().instance().remove(&DataKey::DmsTier2Timeout);
+        env.storage().instance().remove(&DataKey::DmsTier2Config);
         env.storage().instance().remove(&DataKey::DmsPendingClaim);
         env.storage()
             .instance()
@@ -2713,16 +2709,11 @@ impl PaymentRouter {
     /// Returns the Tier 2 council configuration: `(Option<Vec<Address>>, u32, u64)`.
     pub fn get_tier2_council(env: Env) -> (Option<Vec<Address>>, u32, u64) {
         let council = env.storage().instance().get(&DataKey::DmsTier2Council);
-        let threshold = env
+        let (threshold, timeout) = env
             .storage()
             .instance()
-            .get(&DataKey::DmsTier2Threshold)
-            .unwrap_or(0);
-        let timeout = env
-            .storage()
-            .instance()
-            .get(&DataKey::DmsTier2Timeout)
-            .unwrap_or(0);
+            .get(&DataKey::DmsTier2Config)
+            .unwrap_or((0, 0));
         (council, threshold, timeout)
     }
 
@@ -2797,11 +2788,11 @@ impl PaymentRouter {
             }
         }
         if council_set {
-            let timeout2: u64 = env
+            let (_threshold, timeout2): (u32, u64) = env
                 .storage()
                 .instance()
-                .get(&DataKey::DmsTier2Timeout)
-                .unwrap_or(0);
+                .get(&DataKey::DmsTier2Config)
+                .unwrap_or((0, 0));
             if now.saturating_sub(last) >= timeout2 {
                 return true;
             }

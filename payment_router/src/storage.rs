@@ -96,10 +96,8 @@ pub enum DataKey {
     DmsTimeout,
     /// Tier 2 council signers for multi-sig succession.
     DmsTier2Council,
-    /// Tier 2 threshold (M of N).
-    DmsTier2Threshold,
-    /// Tier 2 activation delay (seconds after last heartbeat).
-    DmsTier2Timeout,
+    /// Tier 2 configuration tuple (threshold: u32, timeout_seconds: u64).
+    DmsTier2Config,
     /// Pending in-flight dead man's switch claim (DmsClaimStatus) during grace period.
     DmsPendingClaim,
     /// List of council signers who approved the pending Tier 2 claim.
