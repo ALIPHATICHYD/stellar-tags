@@ -125,6 +125,10 @@ pub enum ActionType {
     /// Arm the dead man's switch: nominate a backup admin and its claim
     /// timeout in seconds.
     SetBackupAdmin(Address, u64),
+    /// Configure tiered dead man's switch succession:
+    /// Tier 1 backup address, Tier 1 delay (seconds),
+    /// Tier 2 council signers, Tier 2 threshold, Tier 2 delay (seconds).
+    SetTieredDeadMansSwitch(Address, u64, Vec<Address>, u32, u64),
     /// Allow swap routing to invoke a DEX router contract.
     RegisterDex(Address),
     /// Stop swap routing from invoking a DEX router contract.
@@ -214,4 +218,20 @@ pub trait KycOracle {
 #[contractclient(name = "PriceFeedOracleClient")]
 pub trait PriceFeedOracle {
     fn get_price(env: Env, base_asset: Address, quote_asset: Address) -> PriceData;
+}
+
+/// Status of an in-flight dead man's switch claim challenge window.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DmsClaimStatus {
+    /// Address that initiated the claim.
+    pub claimant: Address,
+    /// Ledger timestamp when the claim was initiated.
+    pub initiated_at: u64,
+    /// Timestamp when the grace period challenge window expires.
+    pub grace_period_end: u64,
+    /// Target candidate admin address to be granted ownership.
+    pub candidate_admin: Address,
+    /// Succession tier (1 = primary backup, 2 = multi-sig council).
+    pub tier: u32,
 }

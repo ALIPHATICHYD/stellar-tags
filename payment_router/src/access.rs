@@ -249,6 +249,9 @@ pub fn validate_queued_action(env: &Env, action: &ActionType) -> Result<(), Erro
         ActionType::SetMultisigConfig(signers, threshold) => {
             validate_multisig_config(signers, *threshold)?;
         }
+        ActionType::SetTieredDeadMansSwitch(_backup, _tier1, council, threshold, _tier2) => {
+            validate_multisig_config(council, *threshold)?;
+        }
         _ => {}
     }
     Ok(())

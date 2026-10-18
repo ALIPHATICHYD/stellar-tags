@@ -115,4 +115,16 @@ pub enum Error {
     ReentrantCall = 42,
     /// A multi-hop swap path contains the same asset more than once.
     CyclicSwapPath = 48,
+    /// A dead man's switch claim is currently pending in the challenge grace period.
+    DmsClaimPending = 49,
+    /// No dead man's switch claim is currently pending.
+    DmsNoClaimPending = 50,
+    /// The dead man's switch challenge grace period has not elapsed yet.
+    DmsGracePeriodActive = 51,
+    /// The dead man's switch challenge grace period has already expired.
+    DmsGracePeriodExpired = 52,
+    /// The caller is not a valid signer for dead man's switch Tier 2 council.
+    NotCouncilSigner = 53,
+    /// The dead man's switch Tier 2 multi-sig council is not eligible yet (Tier 1 window active).
+    DmsTier2NotEligible = 54,
 }
