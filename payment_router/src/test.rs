@@ -892,7 +892,10 @@ fn test_execute_batch_actions_three_distinct_actions_success() {
 
     // Verify initial state
     assert_eq!(client.get_fee(), 100);
-    assert_eq!(client.get_max_slippage_bps(), PaymentRouter::DEFAULT_MAX_SLIPPAGE_BPS);
+    assert_eq!(
+        client.get_max_slippage_bps(),
+        PaymentRouter::DEFAULT_MAX_SLIPPAGE_BPS
+    );
     assert!(!client.is_dex_registered(&dex));
 
     // Advance time past the 24h delay
@@ -907,9 +910,18 @@ fn test_execute_batch_actions_three_distinct_actions_success() {
     assert!(client.is_dex_registered(&dex));
 
     // Verify all nonces are removed from queue
-    assert_eq!(client.try_get_queued_action(&n1).unwrap_err().unwrap(), Error::TimelockNotFound);
-    assert_eq!(client.try_get_queued_action(&n2).unwrap_err().unwrap(), Error::TimelockNotFound);
-    assert_eq!(client.try_get_queued_action(&n3).unwrap_err().unwrap(), Error::TimelockNotFound);
+    assert_eq!(
+        client.try_get_queued_action(&n1).unwrap_err().unwrap(),
+        Error::TimelockNotFound
+    );
+    assert_eq!(
+        client.try_get_queued_action(&n2).unwrap_err().unwrap(),
+        Error::TimelockNotFound
+    );
+    assert_eq!(
+        client.try_get_queued_action(&n3).unwrap_err().unwrap(),
+        Error::TimelockNotFound
+    );
 
     // Verify batch_actions_executed event was emitted with the list of nonces
     let events = env.events().all();
@@ -926,7 +938,10 @@ fn test_execute_batch_actions_three_distinct_actions_success() {
             false
         }
     });
-    assert!(found, "batch_actions_executed event not found with list of nonces");
+    assert!(
+        found,
+        "batch_actions_executed event not found with list of nonces"
+    );
 }
 
 #[test]
@@ -959,7 +974,10 @@ fn test_execute_batch_actions_reverts_if_one_not_ready() {
 
     // Verify atomic rollback: none of the actions took effect
     assert_eq!(client.get_fee(), 100);
-    assert_eq!(client.get_max_slippage_bps(), PaymentRouter::DEFAULT_MAX_SLIPPAGE_BPS);
+    assert_eq!(
+        client.get_max_slippage_bps(),
+        PaymentRouter::DEFAULT_MAX_SLIPPAGE_BPS
+    );
     assert!(!client.is_dex_registered(&dex));
 
     // Verify all actions remain pending in the queue
@@ -987,7 +1005,10 @@ fn test_execute_batch_actions_reverts_if_one_not_found() {
 
     // Verify neither action executed
     assert_eq!(client.get_fee(), 100);
-    assert_eq!(client.get_max_slippage_bps(), PaymentRouter::DEFAULT_MAX_SLIPPAGE_BPS);
+    assert_eq!(
+        client.get_max_slippage_bps(),
+        PaymentRouter::DEFAULT_MAX_SLIPPAGE_BPS
+    );
     assert!(client.try_get_queued_action(&n1).is_ok());
     assert!(client.try_get_queued_action(&n2).is_ok());
 }

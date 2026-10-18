@@ -122,10 +122,6 @@ impl PaymentRouter {
         access::store_multisig_config(env, signers, threshold);
     }
     #[inline]
-    fn validate_queued_action(env: &Env, action: &ActionType) -> Result<(), Error> {
-        access::validate_queued_action(env, action)
-    }
-    #[inline]
     fn load_fee_config(env: &Env) -> Result<(Address, i128, i128), Error> {
         fees::load_fee_config(env)
     }
