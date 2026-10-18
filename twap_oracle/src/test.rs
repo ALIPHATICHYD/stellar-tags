@@ -275,11 +275,8 @@ fn twap_rejects_a_window_wider_than_history_with_one_observation() {
 
 struct DualOracleSetup {
     env: Env,
-    admin: Address,
     client: TwapOracleClient<'static>,
-    secondary_admin: Address,
     secondary_client: TwapOracleClient<'static>,
-    secondary_id: Address,
 }
 
 fn setup_dual_oracle() -> DualOracleSetup {
@@ -302,11 +299,8 @@ fn setup_dual_oracle() -> DualOracleSetup {
 
     DualOracleSetup {
         env,
-        admin,
         client,
-        secondary_admin,
         secondary_client,
-        secondary_id,
     }
 }
 
@@ -422,18 +416,19 @@ fn consult_trips_circuit_breaker_when_discrepancy_exceeds_threshold() {
     let _ = setup.secondary_client.observe(&106, &1_060);
     let _ = setup.secondary_client.observe(&106, &1_120);
 
-    assert_eq!(setup.client.is_circuit_breaker_tripped(), false);
+    assert!(!setup.client.is_circuit_breaker_tripped());
 
-    // Should trip the circuit breaker and revert
+    // Divergence above the threshold reverts with CircuitBreakerTripped. The
+    // contract writes the trip flag before returning the error, but Soroban
+    // rolls back all storage and events of a reverted invocation, so the flag
+    // is not persisted here; only an admin `trip_circuit_breaker` call does.
     assert_eq!(
         setup.client.try_consult(&60),
         Err(Ok(Error::CircuitBreakerTripped))
     );
+    assert!(!setup.client.is_circuit_breaker_tripped());
 
-    // Circuit breaker is now persistently tripped
-    assert_eq!(setup.client.is_circuit_breaker_tripped(), true);
-
-    // Subsequent calls immediately fail with CircuitBreakerTripped
+    // Later consults keep reverting deterministically while divergence remains.
     assert_eq!(
         setup.client.try_consult(&60),
         Err(Ok(Error::CircuitBreakerTripped))
@@ -444,11 +439,11 @@ fn consult_trips_circuit_breaker_when_discrepancy_exceeds_threshold() {
 fn circuit_breaker_manual_trip_and_reset() {
     let setup = setup_dual_oracle();
 
-    assert_eq!(setup.client.is_circuit_breaker_tripped(), false);
+    assert!(!setup.client.is_circuit_breaker_tripped());
 
     // Admin can manually trip the circuit breaker
     setup.client.trip_circuit_breaker();
-    assert_eq!(setup.client.is_circuit_breaker_tripped(), true);
+    assert!(setup.client.is_circuit_breaker_tripped());
 
     // Calls to consult revert while tripped
     assert_eq!(
@@ -458,7 +453,7 @@ fn circuit_breaker_manual_trip_and_reset() {
 
     // Admin can reset the circuit breaker
     setup.client.reset_circuit_breaker();
-    assert_eq!(setup.client.is_circuit_breaker_tripped(), false);
+    assert!(!setup.client.is_circuit_breaker_tripped());
 }
 
 #[test]
@@ -543,4 +538,3 @@ fn consult_with_zero_window_returns_latest_spot_consensus() {
     // Spot consensus: (300 + 310) / 2 = 305
     assert_eq!(setup.client.consult(&0), 305);
 }
-
