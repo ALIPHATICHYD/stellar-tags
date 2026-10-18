@@ -59,6 +59,8 @@ pub enum Error {
     InvalidDmsConfig = 45,
     /// The sender exceeded the per-ledger payment invocation cap.
     RateLimited = 46,
+    /// The caller does not hold the role required by the entrypoint.
+    RoleNotFound = 47,
     /// A governance proposal id is unknown or no longer votable.
     InvalidProposal = 21,
     /// A governance operation was attempted before governance was configured.
@@ -115,4 +117,6 @@ pub enum Error {
     AlreadyApproved = 41,
     /// A reentrant call was detected.
     ReentrantCall = 42,
+    /// A multi-hop swap path contains the same asset more than once.
+    CyclicSwapPath = 48,
 }

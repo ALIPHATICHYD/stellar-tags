@@ -1,78 +1,62 @@
-const path = require('path');
-const winston = require('winston');
-require('winston-daily-rotate-file');
+const pino = require('pino');
+const pinoHttp = require('pino-http');
 
-// #294 — Centralised Winston logger with rotating file transports.
-// Writing to a single ever-growing file eventually exhausts disk space, so every
-// file transport rotates daily *and* whenever the active file passes MAX_SIZE,
-// keeping only MAX_FILES worth of history (older archives are gzipped/deleted).
-
-// Logs live in <stellar-payment-platform>/logs by default. LOG_DIR can point the
-// transports somewhere else (e.g. a mounted volume in Docker).
-const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, '..', 'logs');
 const LOG_LEVEL = process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug');
-const MAX_SIZE = process.env.LOG_MAX_SIZE || '20m';
-const MAX_FILES = process.env.LOG_MAX_FILES || '14d';
-
-// Test runs should not litter the working tree with log files or console noise.
 const IS_TEST = process.env.NODE_ENV === 'test';
 
-// The transport creates LOG_DIR on demand, so no bootstrap mkdir is needed.
-const rotateOptions = (filename, level) => ({
-  filename: path.join(LOG_DIR, filename),
-  datePattern: 'YYYY-MM-DD',
-  maxSize: MAX_SIZE,
-  maxFiles: MAX_FILES,
-  zippedArchive: true,
-  ...(level ? { level } : {}),
+const logger = pino({
+  level: IS_TEST ? 'silent' : LOG_LEVEL,
+  formatters: {
+    level: (label) => {
+      return { level: label };
+    },
+  },
 });
 
-const fileFormat = winston.format.combine(
-  winston.format.timestamp(),
-  winston.format.errors({ stack: true }),
-  winston.format.json()
-);
+const redactSensitive = (obj) => {
+  if (!obj || typeof obj !== 'object') return obj;
+  if (Array.isArray(obj)) return obj.map(redactSensitive);
+  const clone = { ...obj };
+  const sensitiveFields = ['signature', 'secret', 'x-api-key', 'authorization'];
+  
+  for (const key of Object.keys(clone)) {
+    if (sensitiveFields.includes(key.toLowerCase())) {
+      clone[key] = '[REDACTED]';
+    } else if (typeof clone[key] === 'object' && clone[key] !== null) {
+      clone[key] = redactSensitive(clone[key]);
+    }
+  }
+  return clone;
+};
 
-const consoleFormat = winston.format.combine(
-  winston.format.colorize(),
-  winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-  winston.format.errors({ stack: true }),
-  winston.format.printf(({ timestamp, level, message, correlationId, stack }) => {
-    const trace = correlationId ? ` [Correlation ID: ${correlationId}]` : '';
-    return `${timestamp} ${level}:${trace} ${stack || message}`;
-  })
-);
+const httpLogger = pinoHttp({
+  logger,
+  autoLogging: true,
+  genReqId: (req) => req.correlationId || require('crypto').randomUUID(),
+  serializers: {
+    req: (req) => {
+      const serialized = {
+        id: req.id,
+        method: req.method,
+        path: req.url,
+      };
+      
+      if (req.raw && req.raw.headers) {
+        serialized.headers = redactSensitive(req.raw.headers);
+      } else if (req.headers) {
+        serialized.headers = redactSensitive(req.headers);
+      }
 
-const fileTransports = IS_TEST
-  ? []
-  : [
-    // Everything at LOG_LEVEL and above.
-    new winston.transports.DailyRotateFile(rotateOptions('application-%DATE%.log')),
-    // Errors again on their own, so incidents are easy to find.
-    new winston.transports.DailyRotateFile(rotateOptions('error-%DATE%.log', 'error')),
-  ];
-
-const transports = [
-  new winston.transports.Console({
-    format: consoleFormat,
-    silent: IS_TEST,
-  }),
-  ...fileTransports,
-];
-
-const logger = winston.createLogger({
-  level: LOG_LEVEL,
-  format: fileFormat,
-  defaultMeta: { service: 'stellar-payment-platform' },
-  transports,
-  exitOnError: false,
+      if (req.raw && req.raw.body) {
+        serialized.body = redactSensitive(req.raw.body);
+      }
+      
+      return serialized;
+    },
+    res: (res) => ({
+      status: res.statusCode,
+    })
+  }
 });
 
-// Surface rotation problems (permissions, full disk) instead of failing silently.
-fileTransports.forEach((transport) => {
-  transport.on('error', (error) => {
-    console.error('[logger] rotating file transport error:', error.message);
-  });
-});
-
-module.exports = { logger, fileTransports, LOG_DIR, MAX_SIZE, MAX_FILES };
+module.exports = { logger, httpLogger };
