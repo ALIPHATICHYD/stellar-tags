@@ -302,14 +302,10 @@ impl PaymentProxy {
 
     /// Builds the domain-separated message hash for meta-transactions.
     /// Binds `current_contract_address` + `MetaPayment` struct + `signer_pubkey`.
-    pub fn build_meta_message(
-        env: &Env,
-        payload: &MetaPayment,
-        signer_pubkey: &BytesN<32>,
-    ) -> Bytes {
+    fn build_meta_message(env: &Env, payload: &MetaPayment, signer_pubkey: &BytesN<32>) -> Bytes {
         let mut msg = Bytes::new(env);
         msg.append(&env.current_contract_address().to_xdr(env));
-        msg.append(&payload.to_xdr(env));
+        msg.append(&payload.clone().to_xdr(env));
         msg.append(&Bytes::from_slice(env, &signer_pubkey.to_array()));
         let hash = env.crypto().sha256(&msg);
         Bytes::from(&hash)
@@ -359,7 +355,8 @@ impl PaymentProxy {
         }
 
         let message = Self::build_meta_message(&env, &payload, &signer_pubkey);
-        env.crypto().ed25519_verify(&signer_pubkey, &message, &signature);
+        env.crypto()
+            .ed25519_verify(&signer_pubkey, &message, &signature);
 
         let token_client = token::Client::new(&env, &payload.token_address);
         let user_balance = token_client.balance(&payload.sender);
@@ -452,7 +449,7 @@ impl PaymentProxy {
 #[cfg(all(test, feature = "testutils"))]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, vec, Env, TryIntoVal};
+    use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, Env, TryIntoVal};
 
     // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -733,7 +730,7 @@ mod tests {
         use ed25519_dalek::Signer;
         let mut msg = Bytes::new(env);
         msg.append(&contract_id.to_xdr(env));
-        msg.append(&payload.to_xdr(env));
+        msg.append(&payload.clone().to_xdr(env));
         msg.append(&Bytes::from_slice(env, &signer_pubkey.to_array()));
         let hash = env.crypto().sha256(&msg);
         let hash_bytes = Bytes::from(&hash);
@@ -911,13 +908,19 @@ mod tests {
         let mut tampered_recipient = payload.clone();
         tampered_recipient.recipient = attacker.clone();
         let res = client.try_execute_meta_payment(&tampered_recipient, &pubkey, &signature);
-        assert!(res.is_err(), "altering recipient must fail signature verification");
+        assert!(
+            res.is_err(),
+            "altering recipient must fail signature verification"
+        );
 
         // Relayer tries to inflate amount
         let mut tampered_amount = payload.clone();
         tampered_amount.amount = 5_000;
         let res = client.try_execute_meta_payment(&tampered_amount, &pubkey, &signature);
-        assert!(res.is_err(), "altering amount must fail signature verification");
+        assert!(
+            res.is_err(),
+            "altering amount must fail signature verification"
+        );
 
         // Balances untouched
         assert_eq!(token_client.balance(&sender), 10_000);
