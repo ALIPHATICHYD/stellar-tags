@@ -1,6 +1,30 @@
 use crate::errors::Error;
 use soroban_sdk::{contracttype, Address, BytesN, Env};
 
+// ── Tiered Circuit Breaker ───────────────────────────────────────────────────
+
+/// Tiered pause levels for the emergency circuit breaker (issue #890).
+///
+/// - `None` (0): Contract is fully operational — both direct payments and
+///   swap-routed payments are accepted.
+/// - `SwapsOnly` (1): Only DEX swap operations (`route_payment_with_swap` and
+///   `route_payments_with_swap`) are halted.  Direct `route_payments` calls
+///   continue to function normally, so core merchant payment flows remain
+///   unaffected during an isolated DEX exploit.
+/// - `FullHalt` (2): All routing operations are halted.  Equivalent to the
+///   legacy `Paused = true` behaviour.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PauseLevel {
+    /// Contract fully operational.
+    None = 0,
+    /// DEX swaps halted; direct payments continue.
+    SwapsOnly = 1,
+    /// All routing halted.
+    FullHalt = 2,
+}
+
 /// Role definitions for the Role-Based Access Control (RBAC) system.
 ///
 /// Segregates operational privileges across dedicated role boundaries:

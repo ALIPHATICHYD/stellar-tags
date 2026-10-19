@@ -273,6 +273,7 @@ fn twap_rejects_a_window_wider_than_history_with_one_observation() {
 
 // ── Consensus & Secondary Oracle Fallback Tests ───────────────────────────────
 
+#[allow(dead_code)]
 struct DualOracleSetup {
     env: Env,
     client: TwapOracleClient<'static>,
