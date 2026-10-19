@@ -83,6 +83,18 @@ pub struct PaymentIntent {
     pub deadline: u64,
 }
 
+/// Single meta-transaction invocation parameters for batch execution.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetaTxCall {
+    /// 32-byte Ed25519 signer public key.
+    pub signer_pubkey: BytesN<32>,
+    /// EIP-712 structured payment intent.
+    pub intent: PaymentIntent,
+    /// 64-byte Ed25519 signature over the typed intent hash.
+    pub signature: BytesN<64>,
+}
+
 // ── Storage keys ──────────────────────────────────────────────────────────────
 
 /// All storage keys used by the proxy contract.
@@ -93,7 +105,7 @@ pub enum ProxyDataKey {
     Admin,
     /// Current logic contract that this proxy delegates calls to.
     LogicContract,
-    /// Current meta-transaction nonce for a user.
+    /// Nonce for meta-transactions with relayer fee compensation.
     MetaNonce(Address),
     /// Replay protection nonce for meta-transactions per account.
     Nonce(Address),
@@ -582,6 +594,57 @@ impl PaymentProxy {
         Self::execute_meta_payment(env, payload, signer_pubkey, signature)
     }
 
+    /// Internal sub-call entrypoint for executing a single meta-transaction.
+    ///
+    /// When invoked via `env.try_invoke_contract`, execution runs in an isolated
+    /// sub-call context such that any failure (invalid signature, expired deadline,
+    /// invalid nonce) reverts only this call's state mutations without affecting
+    /// the caller or adjacent batch items.
+    pub fn execute_single_meta_tx(env: Env, call: MetaTxCall) -> Result<(), ProxyError> {
+        Self::execute_payment_intent(env, call.signer_pubkey, call.intent, call.signature)
+    }
+
+    /// Executes a batch of meta-transactions with individual call revert isolation.
+    ///
+    /// Iterates through `calls`, executing each in an isolated execution context.
+    /// If any single meta-transaction fails (e.g., signature mismatch, expired deadline,
+    /// or nonce error), that transaction's state mutations are prevented from committing,
+    /// a `meta_tx_failed` event is emitted with the corresponding error code, and `false`
+    /// is recorded in the return vector. Successful meta-transactions settle normally,
+    /// committing their state changes (incrementing nonces, emitting execution events)
+    /// and recording `true`.
+    ///
+    /// # Parameters
+    /// - `calls`: A vector of [`MetaTxCall`] items to execute.
+    ///
+    /// # Returns
+    /// - `Vec<bool>`: A vector matching the length of `calls` with `true` for succeeded
+    ///   and `false` for failed/reverted meta-transactions.
+    pub fn execute_batch_tolerant(env: Env, calls: Vec<MetaTxCall>) -> Vec<bool> {
+        let mut results = Vec::new(&env);
+
+        for call in calls.iter() {
+            match Self::execute_single_meta_tx(env.clone(), call.clone()) {
+                Ok(()) => {
+                    results.push_back(true);
+                }
+                Err(err) => {
+                    let err_code = err as u32;
+                    env.events().publish(
+                        (
+                            Symbol::new(&env, "meta_tx_failed"),
+                            call.intent.from.clone(),
+                        ),
+                        err_code,
+                    );
+                    results.push_back(false);
+                }
+            }
+        }
+
+        results
+    }
+
     // ── Internal helpers ───────────────────────────────────────────────────────
 
     /// Internal logic for computing the EIP-712 typed structured data hash.
@@ -686,8 +749,8 @@ impl PaymentProxy {
 #[cfg(any(test, feature = "testutils"))]
 pub mod testutils {
     use super::{
-        Address, BytesN, DomainSeparator, Env, PaymentIntent, PaymentProxy, PaymentProxyClient,
-        String,
+        Address, BytesN, DomainSeparator, Env, MetaTxCall, PaymentIntent, PaymentProxy,
+        PaymentProxyClient, String,
     };
     use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 
@@ -759,6 +822,22 @@ pub mod testutils {
         let domain = proxy_client.get_domain_separator();
         sign_payment_intent(env, signing_key, &domain, intent)
     }
+
+    /// Constructs a `MetaTxCall` with a signed `PaymentIntent`.
+    pub fn create_meta_tx_call(
+        env: &Env,
+        signing_key: &SigningKey,
+        signer_pubkey: &BytesN<32>,
+        proxy_client: &PaymentProxyClient,
+        intent: PaymentIntent,
+    ) -> MetaTxCall {
+        let signature = sign_payment_intent_for_proxy(env, signing_key, proxy_client, &intent);
+        MetaTxCall {
+            signer_pubkey: signer_pubkey.clone(),
+            intent,
+            signature,
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -766,7 +845,10 @@ pub mod testutils {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, vec, Env, TryIntoVal};
+    use soroban_sdk::{
+        testutils::{Address as _, Events, Ledger},
+        token, vec, Env, TryIntoVal,
+    };
 
     // ── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -1430,6 +1512,325 @@ mod tests {
 
         let expected_hash = env.crypto().sha256(&passphrase);
         assert_eq!(network_id, expected_hash);
+    }
+
+    // ── Multi-Call Batch Execution with Revert Isolation Tests ────────────────
+
+    /// Acceptance Criterion 4:
+    /// Tests prove a batch of 5 transactions with 2 invalid ones successfully executes the other 3.
+    /// Also verifies Acceptance Criteria 1, 2, and 3:
+    /// - Processes each meta-transaction and records boolean success in returned vector.
+    /// - Failing transactions emit meta_tx_failed event with error code.
+    /// - Valid transactions in the batch settle successfully regardless of adjacent failures.
+    #[test]
+    fn test_batch_execution_5_transactions_with_2_invalid_executes_other_3() {
+        let (env, _admin, _logic, client) = make_proxy();
+
+        // Set ledger timestamp
+        let mut info = env.ledger().get();
+        info.timestamp = 10_000;
+        env.ledger().set(info);
+
+        // Setup 5 distinct users and recipients
+        let (key0, pubkey0) = testutils::generate_keypair(&env, [1u8; 32]);
+        let (key1, pubkey1) = testutils::generate_keypair(&env, [2u8; 32]);
+        let (key2, pubkey2) = testutils::generate_keypair(&env, [3u8; 32]);
+        let (key3, pubkey3) = testutils::generate_keypair(&env, [4u8; 32]);
+        let (key4, pubkey4) = testutils::generate_keypair(&env, [5u8; 32]);
+
+        let user0 = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let user3 = Address::generate(&env);
+        let user4 = Address::generate(&env);
+
+        let recipient = Address::generate(&env);
+
+        // Tx 0: Valid
+        let intent0 = testutils::create_payment_intent(&user0, &recipient, 100_000, 0, 100, 50_000);
+        let call0 = testutils::create_meta_tx_call(&env, &key0, &pubkey0, &client, intent0.clone());
+
+        // Tx 1: Invalid (tampered signature / signature verification failure)
+        let intent1 = testutils::create_payment_intent(&user1, &recipient, 200_000, 0, 200, 50_000);
+        let mut call1 =
+            testutils::create_meta_tx_call(&env, &key1, &pubkey1, &client, intent1.clone());
+        // Invalidate the signature with a dummy all-zeros signature
+        call1.signature = BytesN::from_array(&env, &[0u8; 64]);
+
+        // Tx 2: Valid
+        let intent2 = testutils::create_payment_intent(&user2, &recipient, 300_000, 0, 300, 50_000);
+        let call2 = testutils::create_meta_tx_call(&env, &key2, &pubkey2, &client, intent2.clone());
+
+        // Tx 3: Invalid (expired deadline)
+        let intent3 = testutils::create_payment_intent(&user3, &recipient, 400_000, 0, 400, 9_999);
+        let call3 = testutils::create_meta_tx_call(&env, &key3, &pubkey3, &client, intent3.clone());
+
+        // Tx 4: Valid
+        let intent4 = testutils::create_payment_intent(&user4, &recipient, 500_000, 0, 500, 50_000);
+        let call4 = testutils::create_meta_tx_call(&env, &key4, &pubkey4, &client, intent4.clone());
+
+        let calls = soroban_sdk::vec![&env, call0.clone(), call1, call2, call3, call4];
+
+        let results = client.execute_batch_tolerant(&calls);
+
+        // Acceptance Criterion 1: Processes each and records boolean success in returned vector
+        assert_eq!(
+            results,
+            soroban_sdk::vec![&env, true, false, true, false, true],
+            "Batch execution vector must indicate true for valid and false for failing calls"
+        );
+
+        // Acceptance Criterion 3: Valid transactions in the batch settle successfully regardless of adjacent failures
+        assert_eq!(
+            client.get_nonce(&user0),
+            1,
+            "Tx 0 must settle and burn nonce"
+        );
+        assert_eq!(
+            client.get_nonce(&user1),
+            0,
+            "Tx 1 reverted; nonce must remain 0"
+        );
+        assert_eq!(
+            client.get_nonce(&user2),
+            1,
+            "Tx 2 must settle and burn nonce"
+        );
+        assert_eq!(
+            client.get_nonce(&user3),
+            0,
+            "Tx 3 reverted; nonce must remain 0"
+        );
+        assert_eq!(
+            client.get_nonce(&user4),
+            1,
+            "Tx 4 must settle and burn nonce"
+        );
+
+        // Acceptance Criterion 2: Failing transactions emit meta_tx_failed event with error code
+        let all_events = env.events().all();
+
+        // Check meta_tx_failed event for Tx 1 (InvalidSignature = 7)
+        let tx1_failed_event_found = all_events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+            let topic1: Result<Address, _> = topics.get(1).unwrap().try_into_val(&env);
+            let err_code: Result<u32, _> = data.try_into_val(&env);
+
+            topic0
+                .map(|s| s == Symbol::new(&env, "meta_tx_failed"))
+                .unwrap_or(false)
+                && topic1.map(|a| a == user1).unwrap_or(false)
+                && err_code == Ok(ProxyError::InvalidSignature as u32)
+        });
+        assert!(
+            tx1_failed_event_found,
+            "meta_tx_failed event must be emitted for Tx 1 with InvalidSignature error code (7)"
+        );
+
+        // Check meta_tx_failed event for Tx 3 (DeadlineExpired = 6)
+        let tx3_failed_event_found = all_events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+            let topic1: Result<Address, _> = topics.get(1).unwrap().try_into_val(&env);
+            let err_code: Result<u32, _> = data.try_into_val(&env);
+
+            topic0
+                .map(|s| s == Symbol::new(&env, "meta_tx_failed"))
+                .unwrap_or(false)
+                && topic1.map(|a| a == user3).unwrap_or(false)
+                && err_code == Ok(ProxyError::DeadlineExpired as u32)
+        });
+        assert!(
+            tx3_failed_event_found,
+            "meta_tx_failed event must be emitted for Tx 3 with DeadlineExpired error code (6)"
+        );
+
+        // Check PaymentIntentExecuted event for valid transactions (user0, user2, user4)
+        for user in [&user0, &user2, &user4] {
+            let executed_event_found = all_events.iter().any(|(_, topics, _)| {
+                if topics.len() < 2 {
+                    return false;
+                }
+                let topic0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+                let topic1: Result<Address, _> = topics.get(1).unwrap().try_into_val(&env);
+
+                topic0
+                    .map(|s| s == Symbol::new(&env, "PaymentIntentExecuted"))
+                    .unwrap_or(false)
+                    && topic1.map(|a| a == *user).unwrap_or(false)
+            });
+            assert!(
+                executed_event_found,
+                "PaymentIntentExecuted event must be emitted for valid transactions"
+            );
+        }
+    }
+
+    /// Unit test: Multi-call batch execution handles InvalidNonce error with revert isolation.
+    #[test]
+    fn test_batch_execution_with_invalid_nonce_revert_isolation() {
+        let (env, _admin, _logic, client) = make_proxy();
+
+        let (key0, pubkey0) = testutils::generate_keypair(&env, [10u8; 32]);
+        let (key1, pubkey1) = testutils::generate_keypair(&env, [11u8; 32]);
+        let (key2, pubkey2) = testutils::generate_keypair(&env, [12u8; 32]);
+
+        let user0 = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let user2 = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        // Tx 0: Valid nonce 0
+        let intent0 = testutils::create_payment_intent(&user0, &recipient, 10_000, 0, 10, 50_000);
+        let call0 = testutils::create_meta_tx_call(&env, &key0, &pubkey0, &client, intent0);
+
+        // Tx 1: Invalid nonce (nonce is 99, expected 0)
+        let intent1 = testutils::create_payment_intent(&user1, &recipient, 20_000, 99, 20, 50_000);
+        let call1 = testutils::create_meta_tx_call(&env, &key1, &pubkey1, &client, intent1);
+
+        // Tx 2: Valid nonce 0
+        let intent2 = testutils::create_payment_intent(&user2, &recipient, 30_000, 0, 30, 50_000);
+        let call2 = testutils::create_meta_tx_call(&env, &key2, &pubkey2, &client, intent2);
+
+        let calls = soroban_sdk::vec![&env, call0, call1, call2];
+        let results = client.execute_batch_tolerant(&calls);
+
+        assert_eq!(results, soroban_sdk::vec![&env, true, false, true]);
+        assert_eq!(client.get_nonce(&user0), 1);
+        assert_eq!(client.get_nonce(&user1), 0);
+        assert_eq!(client.get_nonce(&user2), 1);
+
+        let all_events = env.events().all();
+        let invalid_nonce_event = all_events.iter().any(|(_, topics, data)| {
+            if topics.len() < 2 {
+                return false;
+            }
+            let topic0: Result<Symbol, _> = topics.get(0).unwrap().try_into_val(&env);
+            let topic1: Result<Address, _> = topics.get(1).unwrap().try_into_val(&env);
+            let err_code: Result<u32, _> = data.try_into_val(&env);
+
+            topic0
+                .map(|s| s == Symbol::new(&env, "meta_tx_failed"))
+                .unwrap_or(false)
+                && topic1.map(|a| a == user1).unwrap_or(false)
+                && err_code == Ok(ProxyError::InvalidNonce as u32)
+        });
+        assert!(
+            invalid_nonce_event,
+            "meta_tx_failed event must emit InvalidNonce (5)"
+        );
+    }
+
+    /// Unit test: All valid transactions in a batch succeed and update state.
+    #[test]
+    fn test_batch_execution_all_valid() {
+        let (env, _admin, _logic, client) = make_proxy();
+
+        let (key0, pubkey0) = testutils::generate_keypair(&env, [20u8; 32]);
+        let (key1, pubkey1) = testutils::generate_keypair(&env, [21u8; 32]);
+
+        let user0 = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let call0 = testutils::create_meta_tx_call(
+            &env,
+            &key0,
+            &pubkey0,
+            &client,
+            testutils::create_payment_intent(&user0, &recipient, 15_000, 0, 50, 50_000),
+        );
+        let call1 = testutils::create_meta_tx_call(
+            &env,
+            &key1,
+            &pubkey1,
+            &client,
+            testutils::create_payment_intent(&user1, &recipient, 25_000, 0, 50, 50_000),
+        );
+
+        let results = client.execute_batch_tolerant(&soroban_sdk::vec![&env, call0, call1]);
+        assert_eq!(results, soroban_sdk::vec![&env, true, true]);
+        assert_eq!(client.get_nonce(&user0), 1);
+        assert_eq!(client.get_nonce(&user1), 1);
+    }
+
+    /// Unit test: All failing transactions in a batch record false without throwing unhandled abort.
+    #[test]
+    fn test_batch_execution_all_failing() {
+        let (env, _admin, _logic, client) = make_proxy();
+
+        let (key0, pubkey0) = testutils::generate_keypair(&env, [30u8; 32]);
+        let (key1, pubkey1) = testutils::generate_keypair(&env, [31u8; 32]);
+
+        let user0 = Address::generate(&env);
+        let user1 = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        // Wrong nonce for user0
+        let call0 = testutils::create_meta_tx_call(
+            &env,
+            &key0,
+            &pubkey0,
+            &client,
+            testutils::create_payment_intent(&user0, &recipient, 10_000, 5, 10, 50_000),
+        );
+
+        // Wrong signature for user1
+        let mut call1 = testutils::create_meta_tx_call(
+            &env,
+            &key1,
+            &pubkey1,
+            &client,
+            testutils::create_payment_intent(&user1, &recipient, 20_000, 0, 10, 50_000),
+        );
+        call1.signature = BytesN::from_array(&env, &[9u8; 64]);
+
+        let results = client.execute_batch_tolerant(&soroban_sdk::vec![&env, call0, call1]);
+        assert_eq!(results, soroban_sdk::vec![&env, false, false]);
+        assert_eq!(client.get_nonce(&user0), 0);
+        assert_eq!(client.get_nonce(&user1), 0);
+    }
+
+    /// Unit test: Empty batch returns empty vector.
+    #[test]
+    fn test_batch_execution_empty() {
+        let (env, _admin, _logic, client) = make_proxy();
+        let results = client.execute_batch_tolerant(&soroban_sdk::vec![&env]);
+        assert_eq!(results, soroban_sdk::vec![&env]);
+    }
+
+    /// Unit test: Sequential batch execution for the same user increments nonce sequentially.
+    #[test]
+    fn test_batch_execution_same_user_sequential() {
+        let (env, _admin, _logic, client) = make_proxy();
+
+        let (key, pubkey) = testutils::generate_keypair(&env, [40u8; 32]);
+        let user = Address::generate(&env);
+        let recipient = Address::generate(&env);
+
+        let call0 = testutils::create_meta_tx_call(
+            &env,
+            &key,
+            &pubkey,
+            &client,
+            testutils::create_payment_intent(&user, &recipient, 10_000, 0, 10, 50_000),
+        );
+        let call1 = testutils::create_meta_tx_call(
+            &env,
+            &key,
+            &pubkey,
+            &client,
+            testutils::create_payment_intent(&user, &recipient, 20_000, 1, 10, 50_000),
+        );
+
+        let results = client.execute_batch_tolerant(&soroban_sdk::vec![&env, call0, call1]);
+        assert_eq!(results, soroban_sdk::vec![&env, true, true]);
+        assert_eq!(client.get_nonce(&user), 2);
     }
 
     // ── Meta-transaction tests with relayer fee compensation ───────────────────
