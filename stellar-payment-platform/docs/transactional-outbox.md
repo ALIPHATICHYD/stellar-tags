@@ -1,3 +1,5 @@
+<!-- cspell:words RABBITMQ -->
+
 # Transactional payment outbox (#929)
 
 The persistent outbox in `src/services/settlementOutbox.js` is **not** the
