@@ -134,7 +134,7 @@ fn valid_permit_sets_allowance_and_allows_transfer_from() {
 /// A replayed permit must be rejected and must not consume another nonce or
 /// change the allowance.
 #[test]
-#[ignore = "invalid Ed25519 signatures abort the soroban-sdk v20 test host process; re-enable once traps can be observed"]
+#[ignore = "quarantined: Soroban ed25519_verify traps via non-unwinding host panic in native test mode"]
 fn permit_replay_is_rejected() {
     let f = Fixture::new();
     let signing_key = SigningKey::from_bytes(&[7u8; 32]);
@@ -176,7 +176,7 @@ fn permit_rejects_expired_deadline_without_mutating_state() {
 }
 
 #[test]
-#[ignore = "invalid Ed25519 signatures abort the soroban-sdk v20 test host process; the rejection cannot be observed in-process"]
+#[ignore = "quarantined: Soroban ed25519_verify traps via non-unwinding host panic in native test mode"]
 fn invalid_signature_does_not_consume_nonce_or_set_allowance() {
     let f = Fixture::new();
     let signing_key = SigningKey::from_bytes(&[9u8; 32]);

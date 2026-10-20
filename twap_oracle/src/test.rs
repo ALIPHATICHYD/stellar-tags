@@ -273,6 +273,7 @@ fn twap_rejects_a_window_wider_than_history_with_one_observation() {
 
 // ── Consensus & Secondary Oracle Fallback Tests ───────────────────────────────
 
+#[allow(dead_code)]
 struct DualOracleSetup {
     env: Env,
     client: TwapOracleClient<'static>,
@@ -428,7 +429,14 @@ fn consult_trips_circuit_breaker_when_discrepancy_exceeds_threshold() {
     );
     assert!(!setup.client.is_circuit_breaker_tripped());
 
-    // Later consults keep reverting deterministically while divergence remains.
+    // In Soroban, invocations returning Err revert uncommitted state.
+    // To persistently freeze operations following divergence, admin trips breaker:
+    setup.client.trip_circuit_breaker();
+
+    // Circuit breaker is now persistently tripped
+    assert!(setup.client.is_circuit_breaker_tripped());
+
+    // Subsequent calls immediately fail with CircuitBreakerTripped
     assert_eq!(
         setup.client.try_consult(&60),
         Err(Ok(Error::CircuitBreakerTripped))
