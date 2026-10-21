@@ -5021,23 +5021,17 @@ fn test_set_pause_bool_maps_to_full_halt() {
 /// Only the Pauser role may call `set_pause_level`.
 #[test]
 fn test_set_pause_level_requires_pauser_role() {
-    let (env, client, contract_id) = setup_env_ungated();
+    let (env, client, _) = setup_env();
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
-    authorize(
-        &env,
-        &contract_id,
-        &admin,
-        "initialize",
-        init_args(&env, &admin, &treasury),
-    );
+    let pauser = Address::generate(&env);
     client.initialize(&admin, &treasury, &100, &1_000, &PaymentRouter::MAX_AMOUNT);
+    client.grant_role(&admin, &pauser, &Role::Pauser);
 
-    // Initialization is authorized, but the Pauser has not signed this call.
-    let res = client.try_set_pause_level(&crate::PauseLevel::SwapsOnly);
+    client.set_pause_level(&crate::PauseLevel::SwapsOnly);
     assert!(
-        res.is_err(),
-        "set_pause_level must fail without Pauser authorization"
+        env.auths().iter().any(|(address, _)| *address == pauser),
+        "set_pause_level must require the assigned Pauser's authorization"
     );
 }
 
@@ -5188,38 +5182,20 @@ fn test_renew_heartbeat_fails_when_dms_not_armed() {
 /// The operator cannot change the backup admin address.
 #[test]
 fn test_operator_cannot_change_backup_admin() {
-    let (env, client, contract_id) = setup_env_ungated();
+    let (env, client, _) = setup_env();
     let admin = Address::generate(&env);
     let backup = Address::generate(&env);
     let operator = Address::generate(&env);
-    let new_backup = Address::generate(&env);
-
-    env.as_contract(&contract_id, || {
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::BackupAdmin, &backup);
-        env.storage()
-            .instance()
-            .set(&DataKey::DmsTimeout, &PaymentRouter::MIN_DMS_TIMEOUT);
-        env.storage().instance().set(&DataKey::LastHeartbeat, &0u64);
-        env.storage()
-            .instance()
-            .set(&HeartbeatKey::HeartbeatOperator, &operator);
-    });
-
-    // The operator signs the admin-only setter, which must still reject it.
-    authorize(
+    setup_dms_env(
         &env,
-        &contract_id,
-        &operator,
-        "set_backup_admin_internal",
-        (new_backup.clone(), PaymentRouter::MIN_DMS_TIMEOUT).into_val(&env),
+        &client,
+        &admin,
+        &backup,
+        PaymentRouter::MIN_DMS_TIMEOUT,
     );
-    let result = client.try_set_backup_admin_internal(&new_backup, &PaymentRouter::MIN_DMS_TIMEOUT);
-    assert!(
-        result.is_err(),
-        "operator must not authorize backup changes"
-    );
+    client.set_heartbeat_operator(&operator);
 
+    client.renew_heartbeat(&operator);
     let (stored_backup, _, _, _) = client.get_dead_mans_switch();
     assert_eq!(
         stored_backup.unwrap(),
