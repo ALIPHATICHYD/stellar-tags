@@ -70,6 +70,8 @@ pub enum DataKey {
     MinLimit,
     /// Whether routing is currently paused.
     Paused,
+    /// Tiered circuit-breaker pause level.
+    PauseLevel,
     /// Maximum amount accepted by a single payment.
     MaxAmount,
     /// Cumulative lifetime amount routed by a given sender.
@@ -165,6 +167,8 @@ pub enum DataKey {
     UpgradeApproval(BytesN<32>),
     /// Guard against cross-contract reentrancy attacks.
     ReentrancyGuard,
+    /// Packed claimed-leaf bitmap for a Merkle payment batch.
+    MerkleClaimedBits(u64),
     /// A prepared two-phase cross-contract upgrade manifest, keyed by its
     /// upgrade ID. Stored in persistent storage so it survives instance
     /// eviction while the timelock runs.
