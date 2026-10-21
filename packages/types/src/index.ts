@@ -313,10 +313,10 @@ threshold: u32;
  * The result of a DEX-routed swap simulation, returned by
  * [`PaymentRouter::simulate_swap_execution`].
  *
- * The report uses a deterministic constant-product model with default pool
- * reserves and fees. Its CPU, memory, and footprint values are estimates;
- * the listed route addresses are illustrative and are not inspected from
- * pool storage.
+ * The report is produced entirely read-only: it inspects the pool storage
+ * keys along the route, estimates the dynamic CPU / memory cost of the
+ * execution, projects slippage across the pool curves, and returns the
+ * exact Soroban ledger footprint declarations required for the call.
  */
 export interface SwapSimulationReport {
   /**
