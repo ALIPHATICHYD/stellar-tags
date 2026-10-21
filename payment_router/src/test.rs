@@ -5196,9 +5196,7 @@ fn test_operator_cannot_change_backup_admin() {
 
     env.as_contract(&contract_id, || {
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::BackupAdmin, &backup);
+        env.storage().instance().set(&DataKey::BackupAdmin, &backup);
         env.storage()
             .instance()
             .set(&DataKey::DmsTimeout, &PaymentRouter::MIN_DMS_TIMEOUT);
@@ -5216,9 +5214,11 @@ fn test_operator_cannot_change_backup_admin() {
         "set_backup_admin_internal",
         (new_backup.clone(), PaymentRouter::MIN_DMS_TIMEOUT).into_val(&env),
     );
-    let result =
-        client.try_set_backup_admin_internal(&new_backup, &PaymentRouter::MIN_DMS_TIMEOUT);
-    assert!(result.is_err(), "operator must not authorize backup changes");
+    let result = client.try_set_backup_admin_internal(&new_backup, &PaymentRouter::MIN_DMS_TIMEOUT);
+    assert!(
+        result.is_err(),
+        "operator must not authorize backup changes"
+    );
 
     let (stored_backup, _, _, _) = client.get_dead_mans_switch();
     assert_eq!(
