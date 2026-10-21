@@ -4,6 +4,7 @@ mod archival;
 pub mod dead_mans_switch;
 pub mod errors;
 pub mod fees;
+pub mod gas_sim;
 pub mod rate_limit;
 pub mod storage;
 pub mod timelock;
