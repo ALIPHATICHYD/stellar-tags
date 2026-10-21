@@ -18,7 +18,11 @@ const DEFAULT_RESERVE_IN: i128 = 1_000_000;
 const DEFAULT_RESERVE_OUT: i128 = 1_010_000;
 
 fn read_pool_metadata(_env: &Env, _pool: &Address) -> (i128, i128, i128) {
-    (DEFAULT_RESERVE_IN, DEFAULT_RESERVE_OUT, DEFAULT_POOL_FEE_BPS)
+    (
+        DEFAULT_RESERVE_IN,
+        DEFAULT_RESERVE_OUT,
+        DEFAULT_POOL_FEE_BPS,
+    )
 }
 
 fn simulate_hop(

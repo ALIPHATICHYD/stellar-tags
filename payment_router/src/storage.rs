@@ -120,6 +120,8 @@ pub enum DataKey {
     /// Inactivity window (seconds) after which the backup admin may claim.
     /// Stored as `u64` in instance storage.
     DmsTimeout,
+    /// Address authorized to renew the admin heartbeat.
+    HeartbeatOperator,
     /// Per-address payment invocation cap per ledger sequence.
     /// Stored as `u32` in instance storage (`0` disables rate limiting).
     RateLimitConfig,
