@@ -52,6 +52,14 @@ pub enum Role {
     Pauser = 5,
 }
 
+/// Dedicated key type for the heartbeat operator, kept separate to stay within
+/// Soroban's generated enum size limit for `DataKey`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HeartbeatKey {
+    HeartbeatOperator,
+}
+
 /// Storage keys for all contract instance and persistent data.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,8 +128,6 @@ pub enum DataKey {
     /// Inactivity window (seconds) after which the backup admin may claim.
     /// Stored as `u64` in instance storage.
     DmsTimeout,
-    /// Address authorized to renew the admin heartbeat.
-    HeartbeatOperator,
     /// Per-address payment invocation cap per ledger sequence.
     /// Stored as `u32` in instance storage (`0` disables rate limiting).
     RateLimitConfig,

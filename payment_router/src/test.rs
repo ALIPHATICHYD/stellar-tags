@@ -4924,13 +4924,7 @@ fn test_tiered_circuit_breaker_swaps_only_blocks_swap_not_direct() {
 /// Under `PauseLevel::SwapsOnly`, `route_payment_with_swap` reverts.
 #[test]
 fn test_tiered_circuit_breaker_swaps_only_rejects_swap() {
-    let f = setup_swap_fixture(1, 1);
-
-    // Assign Pauser role to the fixture's admin.
-    let admin = Address::generate(&f.env);
-    let treasury = Address::generate(&f.env);
-    // Re-use the swap fixture which already initialized the contract;
-    // we just need to set the pause level via a fresh env.
+    // Initialize a fresh env with the Pauser role assigned to the admin.
     let (env2, client2, _) = setup_env();
     let admin2 = Address::generate(&env2);
     let treasury2 = Address::generate(&env2);
@@ -5030,10 +5024,9 @@ fn test_set_pause_level_requires_pauser_role() {
     let (env, client, _) = setup_env();
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
-    let non_pauser = Address::generate(&env);
     client.initialize(&admin, &treasury, &0, &1_000, &PaymentRouter::MAX_AMOUNT);
 
-    // non_pauser has no Pauser role.
+    // The caller has no Pauser authorization.
     let res = client.try_set_pause_level(&crate::PauseLevel::SwapsOnly);
     // The call will panic / return an auth error because the admin (who has
     // Pauser by default) did not sign.  In the test harness this surfaces as
@@ -5208,7 +5201,7 @@ fn test_operator_cannot_change_backup_admin() {
 
     // The operator does not have admin rights, so set_backup_admin_internal
     // must fail.
-    let res = client.try_set_backup_admin_internal(&new_backup, &PaymentRouter::MIN_DMS_TIMEOUT);
+    let _res = client.try_set_backup_admin_internal(&new_backup, &PaymentRouter::MIN_DMS_TIMEOUT);
     // Because mock_all_auths is active the call will proceed but only if the
     // admin signs — here we confirm the stored backup is unchanged.
     // The try_ variant failing here is fine; the assertion below is the key
