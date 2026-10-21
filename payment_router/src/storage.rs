@@ -155,12 +155,6 @@ pub enum DataKey {
     YieldPrincipal(Address),
     /// Whether a DEX router contract is approved to receive cross-contract swap calls.
     RegisteredDex(Address),
-    /// Optional input reserve used by read-only route simulations.
-    PoolReserveIn(Address),
-    /// Optional output reserve used by read-only route simulations.
-    PoolReserveOut(Address),
-    /// Optional fee in basis points used by read-only route simulations.
-    PoolFeeBps(Address),
     /// Maximum tolerated swap slippage in basis points.
     MaxSlippageBps,
     /// Maximum tolerated swap slippage for a specific input/output token pair.

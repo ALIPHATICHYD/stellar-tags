@@ -1,5 +1,5 @@
 use crate::errors::Error;
-use crate::storage::{DataKey, BPS_DIVISOR};
+use crate::storage::BPS_DIVISOR;
 use crate::types::SwapSimulationReport;
 use soroban_sdk::{Address, Env, Vec};
 
@@ -17,18 +17,8 @@ const MAX_PRICE_IMPACT_BPS: i128 = 1_000;
 const DEFAULT_RESERVE_IN: i128 = 1_000_000;
 const DEFAULT_RESERVE_OUT: i128 = 1_010_000;
 
-fn read_pool_metadata(env: &Env, pool: &Address) -> (i128, i128, i128) {
-    let storage = env.storage().instance();
-    let reserve_in = storage
-        .get(&DataKey::PoolReserveIn(pool.clone()))
-        .unwrap_or(DEFAULT_RESERVE_IN);
-    let reserve_out = storage
-        .get(&DataKey::PoolReserveOut(pool.clone()))
-        .unwrap_or(DEFAULT_RESERVE_OUT);
-    let fee_bps = storage
-        .get(&DataKey::PoolFeeBps(pool.clone()))
-        .unwrap_or(DEFAULT_POOL_FEE_BPS);
-    (reserve_in, reserve_out, fee_bps)
+fn read_pool_metadata(_env: &Env, _pool: &Address) -> (i128, i128, i128) {
+    (DEFAULT_RESERVE_IN, DEFAULT_RESERVE_OUT, DEFAULT_POOL_FEE_BPS)
 }
 
 fn simulate_hop(
@@ -37,10 +27,7 @@ fn simulate_hop(
     amount_in: i128,
     fee_bps: i128,
 ) -> Option<(i128, i128)> {
-    if reserve_in <= 0
-        || reserve_out <= 0
-        || amount_in <= 0
-        || !(0..BPS_DIVISOR).contains(&fee_bps)
+    if reserve_in <= 0 || reserve_out <= 0 || amount_in <= 0 || !(0..BPS_DIVISOR).contains(&fee_bps)
     {
         return None;
     }
@@ -83,8 +70,8 @@ pub fn simulate_swap_execution(
 
     for pool in route.iter() {
         let (reserve_in, reserve_out, fee_bps) = read_pool_metadata(env, &pool);
-        let (next_amount, hop_impact) = simulate_hop(reserve_in, reserve_out, amount_out, fee_bps)
-            .ok_or(Error::SwapFailed)?;
+        let (next_amount, hop_impact) =
+            simulate_hop(reserve_in, reserve_out, amount_out, fee_bps).ok_or(Error::SwapFailed)?;
         amount_out = next_amount;
         impact_bps = impact_bps.saturating_add(hop_impact);
         read_only.push_back(pool.clone());

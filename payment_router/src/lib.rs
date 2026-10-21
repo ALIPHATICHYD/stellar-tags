@@ -47,6 +47,7 @@ impl PaymentRouter {
     pub const CONTRACT_VERSION: &'static str = env!("CARGO_PKG_VERSION");
     pub const DEFAULT_MAX_SLIPPAGE_BPS: i128 = storage::DEFAULT_MAX_SLIPPAGE_BPS;
     pub const MAX_SLIPPAGE_BPS_LIMIT: i128 = storage::MAX_SLIPPAGE_BPS_LIMIT;
+    pub const MAX_PAIR_SLIPPAGE_BPS: i128 = storage::MAX_PAIR_SLIPPAGE_BPS;
     pub const DAY_IN_LEDGERS: u32 = storage::DAY_IN_LEDGERS;
     pub const INSTANCE_BUMP_AMOUNT: u32 = storage::INSTANCE_BUMP_AMOUNT;
     pub const INSTANCE_LIFETIME_THRESHOLD: u32 = storage::INSTANCE_LIFETIME_THRESHOLD;
@@ -266,6 +267,23 @@ impl PaymentRouter {
             .unwrap_or(Self::DEFAULT_MAX_SLIPPAGE_BPS)
     }
 
+    /// Resolve a token-pair override, falling back to the global slippage cap.
+    fn pair_max_slippage_bps(
+        env: &Env,
+        token_in: &Address,
+        token_out: &Address,
+    ) -> Result<i128, Error> {
+        let configured: Option<i128> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PairSlippage(token_in.clone(), token_out.clone()));
+        match configured {
+            Some(bps) if (0..=Self::MAX_PAIR_SLIPPAGE_BPS).contains(&bps) => Ok(bps),
+            Some(_) => Err(Error::InvalidSlippageConfig),
+            None => Ok(Self::max_slippage_bps(env)),
+        }
+    }
+
     /// Returns whether a DEX router has been approved for swap routing.
     fn is_dex_registered_internal(env: &Env, dex: &Address) -> bool {
         env.storage()
@@ -350,11 +368,9 @@ impl PaymentRouter {
 
     /// Read-only simulation of a multi-hop swap route.
     ///
-    /// Inspects each hop's pool storage keys, projects slippage across the
-    /// pool curves, estimates CPU/memory cost, and returns the exact Soroban
-    /// ledger footprint declarations required to execute the route. Never
-    /// writes persistent state: only `env.storage().instance()` reads are
-    /// performed, so the call is safe to run off-chain before submission.
+    /// Projects slippage across a deterministic constant-product pool model,
+    /// estimates CPU/memory cost, and lists the route addresses needed to
+    /// execute the swap. The call does not write contract storage.
     ///
     /// # Parameters
     /// - `route`: Ordered pool addresses from `token_in` to `token_out`.
@@ -362,9 +378,9 @@ impl PaymentRouter {
     ///
     /// # Returns
     /// A [`SwapSimulationReport`] with the estimated CPU instructions, memory
-    /// bytes, projected output, price impact in bps, and the required
-    /// read-only/read-write footprint keys. The report's `exceeds_footprint_limit`
-    /// flag is set when the read-write key count exceeds the Soroban limit.
+    /// bytes, projected output, price impact in bps, and route addresses for
+    /// read-only and read-write access. The report's `exceeds_footprint_limit`
+    /// flag estimates whether the route exceeds the Soroban write-key limit.
     pub fn simulate_swap_execution(
         env: Env,
         route: Vec<Address>,
@@ -2478,10 +2494,8 @@ impl PaymentRouter {
 
         dead_mans_switch::set_heartbeat_operator_internal(&env, &operator);
 
-        env.events().publish(
-            (Symbol::new(&env, "hb_operator_set"), admin),
-            operator,
-        );
+        env.events()
+            .publish((Symbol::new(&env, "hb_operator_set"), admin), operator);
 
         log!(&env, "Heartbeat operator set");
         Ok(())
@@ -3253,7 +3267,8 @@ impl PaymentRouter {
             return Err(Error::SlippageExceeded);
         }
         if swap.expected_amount_out > 0 {
-            let max_slippage_bps = Self::max_slippage_bps(env);
+            let max_slippage_bps =
+                Self::pair_max_slippage_bps(env, &swap.sell_token, &swap.buy_token)?;
             let slippage_floor = Self::slippage_floor(swap.expected_amount_out, max_slippage_bps);
             if amount_out < slippage_floor {
                 log!(
@@ -3428,7 +3443,7 @@ impl PaymentRouter {
             return Err(Error::InvalidSwapParams);
         }
 
-        let max_slippage_bps = Self::max_slippage_bps(&env);
+        let max_slippage_bps = Self::pair_max_slippage_bps(&env, &sell_token, &buy_token)?;
 
         Ok(SwapQuote {
             amount_out,
@@ -3565,6 +3580,39 @@ impl PaymentRouter {
     /// Does not panic.
     pub fn get_max_slippage_bps(env: Env) -> i128 {
         Self::max_slippage_bps(&env)
+    }
+
+    /// Returns a pair-specific slippage cap, or the global cap when unset.
+    pub fn get_pair_max_slippage_bps(
+        env: Env,
+        token_in: Address,
+        token_out: Address,
+    ) -> Result<i128, Error> {
+        Self::pair_max_slippage_bps(&env, &token_in, &token_out)
+    }
+
+    /// Sets a pair-specific slippage cap. Prefer the timelocked action in
+    /// production configuration.
+    pub fn set_pair_max_slippage_bps(
+        env: Env,
+        token_in: Address,
+        token_out: Address,
+        max_slippage_bps: i128,
+    ) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        if !(0..=Self::MAX_PAIR_SLIPPAGE_BPS).contains(&max_slippage_bps) {
+            return Err(Error::InvalidSlippageConfig);
+        }
+
+        let key = DataKey::PairSlippage(token_in, token_out);
+        env.storage().persistent().set(&key, &max_slippage_bps);
+        env.storage().persistent().extend_ttl(
+            &key,
+            Self::PERSISTENT_LIFETIME_THRESHOLD,
+            Self::PERSISTENT_BUMP_AMOUNT,
+        );
+        Ok(())
     }
 
     /// Returns the available internal refund balance for a user and token.

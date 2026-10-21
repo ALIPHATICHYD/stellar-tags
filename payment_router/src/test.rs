@@ -5086,7 +5086,13 @@ fn test_operator_renews_heartbeat_resets_dms_clock() {
     let backup = Address::generate(&env);
     let operator = Address::generate(&env);
 
-    setup_dms_env(&env, &client, &admin, &backup, PaymentRouter::MIN_DMS_TIMEOUT);
+    setup_dms_env(
+        &env,
+        &client,
+        &admin,
+        &backup,
+        PaymentRouter::MIN_DMS_TIMEOUT,
+    );
     client.set_heartbeat_operator(&operator);
 
     // Advance time close to (but before) the timeout.
@@ -5120,7 +5126,13 @@ fn test_renew_heartbeat_rejects_unauthorized_address() {
     let operator = Address::generate(&env);
     let impostor = Address::generate(&env);
 
-    setup_dms_env(&env, &client, &admin, &backup, PaymentRouter::MIN_DMS_TIMEOUT);
+    setup_dms_env(
+        &env,
+        &client,
+        &admin,
+        &backup,
+        PaymentRouter::MIN_DMS_TIMEOUT,
+    );
     client.set_heartbeat_operator(&operator);
 
     let res = client.try_renew_heartbeat(&impostor);
@@ -5139,7 +5151,13 @@ fn test_renew_heartbeat_fails_when_no_operator_configured() {
     let backup = Address::generate(&env);
     let random = Address::generate(&env);
 
-    setup_dms_env(&env, &client, &admin, &backup, PaymentRouter::MIN_DMS_TIMEOUT);
+    setup_dms_env(
+        &env,
+        &client,
+        &admin,
+        &backup,
+        PaymentRouter::MIN_DMS_TIMEOUT,
+    );
     // No operator set.
 
     let res = client.try_renew_heartbeat(&random);
@@ -5179,7 +5197,13 @@ fn test_operator_cannot_change_backup_admin() {
     let operator = Address::generate(&env);
     let new_backup = Address::generate(&env);
 
-    setup_dms_env(&env, &client, &admin, &backup, PaymentRouter::MIN_DMS_TIMEOUT);
+    setup_dms_env(
+        &env,
+        &client,
+        &admin,
+        &backup,
+        PaymentRouter::MIN_DMS_TIMEOUT,
+    );
     client.set_heartbeat_operator(&operator);
 
     // The operator does not have admin rights, so set_backup_admin_internal
