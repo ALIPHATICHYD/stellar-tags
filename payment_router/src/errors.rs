@@ -18,7 +18,7 @@ pub enum Error {
     NotInitialized = 5,
     /// The contract is currently paused; routing calls are rejected until unpaused.
     Paused = 6,
-    /// A fee configuration value (basis points or cap) is out of the allowed range.
+    /// A fee configuration value (basis opoints or cap) is out of the allowed range.
     InvalidFeeRate = 7,
     /// Sender and recipient addresses are the same (self-routing not allowed).
     InvalidRecipient = 8,
@@ -47,8 +47,6 @@ pub enum Error {
     SwapDeadlineExpired = 18,
     /// The supplied role is not one the contract recognises.
     InvalidRole = 20,
-    /// The caller does not hold the role required by the entrypoint.
-    RoleNotFound = 47,
     /// The caller holds a role but is not permitted to perform this action.
     RoleNotAuthorized = 48,
     /// No backup admin has been armed, so the dead man's switch cannot fire.
@@ -118,5 +116,5 @@ pub enum Error {
     /// A reentrant call was detected.
     ReentrantCall = 42,
     /// A multi-hop swap path contains the same asset more than once.
-    CyclicSwapPath = 48,
+    CyclicSwapPath = 49,
 }

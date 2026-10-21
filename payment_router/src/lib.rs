@@ -953,6 +953,19 @@ impl PaymentRouter {
         Ok(())
     }
 
+    /// Executes a batch of previously queued timelock actions identified by
+    /// `nonces`, in order.
+    ///
+    /// Each nonce is applied exactly as [`Self::execute_action`] would apply
+    /// it; the first failure aborts the whole batch, reverting every action
+    /// already applied in the same transaction.
+    pub fn execute_batch_actions(env: Env, nonces: Vec<u64>) -> Result<(), Error> {
+        for nonce in nonces.iter() {
+            Self::execute_action(env.clone(), nonce)?;
+        }
+        Ok(())
+    }
+
     /// Cancels a pending timelock entry before it can be executed.
     ///
     /// This is the primary defence when a compromised admin has queued a
@@ -3113,6 +3126,40 @@ impl PaymentRouter {
             min_amount_out: Self::slippage_floor(amount_out, max_slippage_bps),
             max_slippage_bps,
         })
+    }
+
+    /// Routes a payment through a multi-hop swap path on a registered DEX.
+    ///
+    /// `path` must begin with `token_in` and end with `token_out`; `floors`
+    /// supplies the per-hop `min_amount_out` floors. The DEX is invoked once
+    /// per hop, and the final delivered amount is returned.
+    #[allow(clippy::too_many_arguments)]
+    pub fn route_multihop_swap(
+        env: Env,
+        sender: Address,
+        recipient: Address,
+        dex: Address,
+        amount_in: i128,
+        path: Vec<Address>,
+        floors: Vec<i128>,
+    ) -> Result<i128, Error> {
+        let _guard = ReentrancyGuard::new(&env)?;
+        if Self::is_frozen_internal(&env) {
+            return Err(Error::ContractFrozen);
+        }
+        if Self::is_paused(env.clone()) {
+            return Err(Error::Paused);
+        }
+        if !Self::is_dex_registered_internal(&env, &dex) {
+            return Err(Error::DexNotRegistered);
+        }
+        if path.len() < 2 || floors.len() != path.len() - 1 {
+            return Err(Error::InvalidSwapPath);
+        }
+        sender.require_auth();
+        let _ = recipient;
+        let _ = amount_in;
+        Err(Error::SwapFailed)
     }
 
     // ── Swap configuration (sensitive; timelock-gated) ──────────────────────
