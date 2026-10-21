@@ -39,7 +39,9 @@ pub fn set_heartbeat_operator_internal(env: &Env, operator: &Address) {
 /// No authorization is performed here — callers must verify admin auth before
 /// calling this function.
 pub fn remove_heartbeat_operator_internal(env: &Env) {
-    env.storage().instance().remove(&HeartbeatKey::HeartbeatOperator);
+    env.storage()
+        .instance()
+        .remove(&HeartbeatKey::HeartbeatOperator);
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -47,7 +49,9 @@ pub fn remove_heartbeat_operator_internal(env: &Env) {
 
 /// Returns the current heartbeat operator, or `None` if none is configured.
 pub fn get_heartbeat_operator_internal(env: &Env) -> Option<Address> {
-    env.storage().instance().get(&HeartbeatKey::HeartbeatOperator)
+    env.storage()
+        .instance()
+        .get(&HeartbeatKey::HeartbeatOperator)
 }
 
 // ── Heartbeat renewal ────────────────────────────────────────────────────────
