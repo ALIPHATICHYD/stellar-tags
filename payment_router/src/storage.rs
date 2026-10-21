@@ -410,7 +410,7 @@ pub fn merkle_bitset_words(leaf_count: u32) -> u32 {
     if leaf_count == 0 {
         return 0;
     }
-    (leaf_count + MERKLE_BITS_PER_WORD - 1) / MERKLE_BITS_PER_WORD
+    leaf_count.div_ceil(MERKLE_BITS_PER_WORD)
 }
 
 /// Reads the packed claimed bitset for a batch, returning an empty vector when
