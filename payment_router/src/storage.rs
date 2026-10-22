@@ -52,6 +52,14 @@ pub enum Role {
     Pauser = 5,
 }
 
+/// Dedicated key type for the heartbeat operator, kept separate to stay within
+/// Soroban's generated enum size limit for `DataKey`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HeartbeatKey {
+    HeartbeatOperator,
+}
+
 /// Storage keys for all contract instance and persistent data.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -70,6 +78,8 @@ pub enum DataKey {
     MinLimit,
     /// Whether routing is currently paused.
     Paused,
+    /// Tiered circuit-breaker pause level.
+    PauseLevel,
     /// Maximum amount accepted by a single payment.
     MaxAmount,
     /// Cumulative lifetime amount routed by a given sender.
@@ -165,29 +175,12 @@ pub enum DataKey {
     UpgradeApproval(BytesN<32>),
     /// Guard against cross-contract reentrancy attacks.
     ReentrancyGuard,
-    /// A Merkle batch distribution record keyed by its batch id.
-    /// Stores sender, token, total amount, merkle root, expiration, and
-    /// amount already claimed.
-    MerkleBatch(u64),
-    /// Monotonic nonce used to generate unique Merkle batch ids.
-    MerkleBatchNonce,
-    /// Per-batch claimed-amount record for a recipient, keyed by
-    /// (batch_id, recipient).  Presence indicates the recipient has claimed.
-    MerkleClaim(u64, Address),
-    /// Packed claimed-status bitset for a Merkle batch, keyed by batch id.
-    /// Bit `i` is set when leaf index `i` has been claimed.
+    /// Packed claimed-leaf bitmap for a Merkle payment batch.
     MerkleClaimedBits(u64),
-    /// Total amount already claimed against a Merkle batch, keyed by batch id.
-    MerkleClaimedTotal(u64),
-    /// Tiered pause level for the emergency circuit breaker (issue #890).
-    /// Stored as `PauseLevel` in instance storage. Supersedes the legacy
-    /// `DataKey::Paused` boolean; both keys are honoured during migration so
-    /// existing paused state is preserved.
-    PauseLevel,
-    /// The operator address authorized to renew the dead man's switch heartbeat
-    /// without possessing full admin privileges (issue #889).
-    /// Stored as `Address` in instance storage.
-    HeartbeatOperator,
+    /// A prepared two-phase cross-contract upgrade manifest, keyed by its
+    /// upgrade ID. Stored in persistent storage so it survives instance
+    /// eviction while the timelock runs.
+    TwoPhaseCommit(BytesN<32>),
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -417,7 +410,7 @@ pub fn merkle_bitset_words(leaf_count: u32) -> u32 {
     if leaf_count == 0 {
         return 0;
     }
-    (leaf_count + MERKLE_BITS_PER_WORD - 1) / MERKLE_BITS_PER_WORD
+    leaf_count.div_ceil(MERKLE_BITS_PER_WORD)
 }
 
 /// Reads the packed claimed bitset for a batch, returning an empty vector when
