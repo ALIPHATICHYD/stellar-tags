@@ -113,12 +113,20 @@ pub enum Error {
     AlreadyApproved = 41,
     /// A reentrant call was detected.
     ReentrantCall = 42,
-    /// A multi-hop swap path contains the same asset more than once.
-    CyclicSwapPath = 48,
-    /// A dead man's switch claim is currently pending in the challenge grace period.
-    DmsClaimPending = 49,
-    /// The dead man's switch challenge grace period has not elapsed yet.
-    DmsGracePeriodActive = 50,
-    /// The caller is not a valid signer for dead man's switch Tier 2 council.
-    NotCouncilSigner = 51,
+    /// No Merkle batch exists for the supplied root or batch id.
+    MerkleBatchNotFound = 48,
+    /// A Merkle batch with this root has already been registered.
+    MerkleBatchAlreadyExists = 49,
+    /// The supplied Merkle inclusion proof does not verify against the root.
+    InvalidMerkleProof = 50,
+    /// The recipient has already claimed their Merkle payment.
+    MerklePaymentAlreadyClaimed = 51,
+    /// The Merkle batch has not expired yet, so unclaimed funds cannot be
+    /// reclaimed by the sender.
+    MerkleBatchNotExpired = 52,
+    /// The Merkle batch has expired and can no longer be claimed against.
+    MerkleBatchExpired = 53,
+    /// The claimed amount does not match the amount committed in the Merkle
+    /// leaf for this recipient.
+    MerkleAmountMismatch = 54,
 }
