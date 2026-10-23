@@ -46,8 +46,6 @@ pub enum Error {
     /// The swap delivered less than `min_amount_out`, or moved the output
     /// further than `max_slippage_bps` away from the caller's quote.
     SlippageExceeded = 17,
-    /// The swap path contains a cycle and would never terminate.
-    CyclicSwapPath = 23,
     /// The swap was submitted after its `deadline` had already passed.
     SwapDeadlineExpired = 18,
     /// The supplied role is not one the contract recognises.
