@@ -419,28 +419,27 @@ fn consult_trips_circuit_breaker_when_discrepancy_exceeds_threshold() {
 
     assert!(!setup.client.is_circuit_breaker_tripped());
 
-    // Divergence above the threshold reverts with CircuitBreakerTripped. The
-    // contract writes the trip flag before returning the error, but Soroban
-    // rolls back all storage and events of a reverted invocation, so the flag
-    // is not persisted here; only an admin `trip_circuit_breaker` call does.
+    // Should reject the consultation with the circuit-breaker error
     assert_eq!(
         setup.client.try_consult(&60),
         Err(Ok(Error::CircuitBreakerTripped))
     );
+
+    // The rejected call was rolled back in full, so it did not leave the
+    // breaker tripped: nothing an invocation writes survives its own failure.
+    // Freezing pricing across transactions therefore needs an explicit trip.
     assert!(!setup.client.is_circuit_breaker_tripped());
 
-    // In Soroban, invocations returning Err revert uncommitted state.
-    // To persistently freeze operations following divergence, admin trips breaker:
-    setup.client.trip_circuit_breaker();
-
-    // Circuit breaker is now persistently tripped
-    assert!(setup.client.is_circuit_breaker_tripped());
-
-    // Subsequent calls immediately fail with CircuitBreakerTripped
+    // The disagreement is still there, so every further consultation is
+    // rejected instead of being served a price.
     assert_eq!(
         setup.client.try_consult(&60),
         Err(Ok(Error::CircuitBreakerTripped))
     );
+
+    // An admin trip is what freezes pricing until a reset.
+    setup.client.trip_circuit_breaker();
+    assert!(setup.client.is_circuit_breaker_tripped());
 }
 
 #[test]
