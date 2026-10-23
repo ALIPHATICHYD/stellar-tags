@@ -125,6 +125,10 @@ pub enum ProxyDataKey {
     LogicContract,
     /// A delegated signing key and its remaining spend allowance / expiry.
     Session(Address),
+    /// Meta-transaction nonce counter for a delegated sender.
+    MetaNonce(Address),
+    /// Payment-intent replay-protection nonce counter for an account.
+    Nonce(Address),
 }
 
 /// Remaining spending allowance and expiry for a delegated session key.
@@ -158,10 +162,6 @@ pub struct SwapPayment {
     pub expected_amount_out: i128,
     pub deadline: u64,
     pub dex: Address,
-    /// Nonce for meta-transactions with relayer fee compensation.
-    MetaNonce(Address),
-    /// Replay protection nonce for meta-transactions per account.
-    Nonce(Address),
 }
 
 // ── Error codes ───────────────────────────────────────────────────────────────

@@ -53,7 +53,7 @@ pub enum Role {
 }
 
 /// Storage keys for all contract instance and persistent data.
-#[contracttype]
+#[contracttype(export = false)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DataKey {
     /// The current admin address.

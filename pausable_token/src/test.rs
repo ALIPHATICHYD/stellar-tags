@@ -328,14 +328,12 @@ fn expired_allowance_is_zeroed_and_pruned_from_state() {
     assert_eq!(f.token.allowance(&f.alice, &spender), 0);
 
     // The expired entry is pruned from persistent storage.
-    let stored: Option<BytesN<20>> = f
-        .env
-        .as_contract(&f.id, || {
-            f.env
-                .storage()
-                .persistent()
-                .get(&DataKey::Allowance(f.alice.clone(), spender.clone()))
-        });
+    let stored: Option<BytesN<20>> = f.env.as_contract(&f.id, || {
+        f.env
+            .storage()
+            .persistent()
+            .get(&DataKey::Allowance(f.alice.clone(), spender.clone()))
+    });
     assert!(stored.is_none());
 }
 

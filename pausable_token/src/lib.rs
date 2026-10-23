@@ -634,8 +634,7 @@ impl TokenInterface for PausableToken {
         }
         spender.require_auth();
         let allowance = Self::read_allowance(&env, &from, &spender);
-        if allowance.expiration_ledger > 0
-            && env.ledger().sequence() > allowance.expiration_ledger
+        if allowance.expiration_ledger > 0 && env.ledger().sequence() > allowance.expiration_ledger
         {
             panic_with_error!(&env, Error::AllowanceExpired);
         }
@@ -687,8 +686,7 @@ impl TokenInterface for PausableToken {
         }
         spender.require_auth();
         let allowance = Self::read_allowance(&env, &from, &spender);
-        if allowance.expiration_ledger > 0
-            && env.ledger().sequence() > allowance.expiration_ledger
+        if allowance.expiration_ledger > 0 && env.ledger().sequence() > allowance.expiration_ledger
         {
             panic_with_error!(&env, Error::AllowanceExpired);
         }
