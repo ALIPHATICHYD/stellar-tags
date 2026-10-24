@@ -18,7 +18,7 @@ pub enum Error {
     NotInitialized = 5,
     /// The contract is currently paused; routing calls are rejected until unpaused.
     Paused = 6,
-    /// A fee configuration value (basis opoints or cap) is out of the allowed range.
+    /// A fee configuration value (basis points or cap) is out of the allowed range.
     InvalidFeeRate = 7,
     /// Sender and recipient addresses are the same (self-routing not allowed).
     InvalidRecipient = 8,
@@ -54,6 +54,9 @@ pub enum Error {
     InvalidRole = 20,
     /// The caller holds a role but is not permitted to perform this action.
     RoleNotAuthorized = 48,
+    /// The timelock entry or cross-contract upgrade manifest could not be found.
+    /// Retained alongside `TimelockNotFound` so callers referencing either name compile.
+    TimelockNotFoundLegacy = 62,
     /// No backup admin has been armed, so the dead man's switch cannot fire.
     NoBackupAdmin = 43,
     /// The dead man's switch timeout has not elapsed since the last heartbeat.

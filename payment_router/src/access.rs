@@ -4,7 +4,37 @@ use crate::storage::{
     PERSISTENT_BUMP_AMOUNT, PERSISTENT_LIFETIME_THRESHOLD,
 };
 use crate::types::ActionType;
-use soroban_sdk::{Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{Address, Bytes, BytesN, Env, Symbol, Vec};
+
+// ── Rate Counter Packing Helpers ─────────────────────────────────────────────
+
+/// Packs a `(window, invocations)` pair into an 8-byte big-endian value.
+/// The first 4 bytes hold the window, the last 4 bytes hold the invocation count.
+pub fn pack_rate_counter(env: &Env, window: u32, invocations: u32) -> Bytes {
+    let mut buf = [0u8; 8];
+    buf[0..4].copy_from_slice(&window.to_be_bytes());
+    buf[4..8].copy_from_slice(&invocations.to_be_bytes());
+    Bytes::from_array(env, &buf)
+}
+
+/// Unpacks an 8-byte big-endian rate counter into `(window, invocations)`.
+pub fn unpack_rate_counter(packed: &Bytes) -> (u32, u32) {
+    let mut window_bytes = [0u8; 4];
+    let mut invocation_bytes = [0u8; 4];
+    for i in 0..4 {
+        window_bytes[i] = packed.get(i as u32).unwrap_or(0);
+        invocation_bytes[i] = packed.get((i + 4) as u32).unwrap_or(0);
+    }
+    (
+        u32::from_be_bytes(window_bytes),
+        u32::from_be_bytes(invocation_bytes),
+    )
+}
+
+/// Returns the current rate-limit window, derived from the ledger sequence.
+pub fn current_window(env: &Env) -> u32 {
+    env.ledger().sequence()
+}
 
 // ── Role-Based Access Control (RBAC) Helpers ─────────────────────────────────
 
@@ -20,10 +50,12 @@ pub fn set_role_internal(env: &Env, role: Role, account: &Address) {
                 .set(&DataKey::UserRole(previous, role.clone()), &false);
         }
     }
-    env.storage().instance().set(&DataKey::Role(role.clone()), account);
+    env.storage()
+        .instance()
+        .set(&DataKey::Role(role.clone()), account);
     env.storage()
         .persistent()
-        .set(&DataKey::UserRole(account.clone(), role), &true);
+        .set(&DataKey::UserRole(account.clone(), role.clone()), &true);
     env.storage().persistent().extend_ttl(
         &DataKey::UserRole(account.clone(), role),
         PERSISTENT_LIFETIME_THRESHOLD,
@@ -38,7 +70,9 @@ pub fn remove_role_internal(env: &Env, role: Role, account: &Address) {
         .get::<DataKey, Address>(&DataKey::Role(role.clone()))
     {
         if current == *account {
-            env.storage().instance().remove(&DataKey::Role(role.clone()));
+            env.storage()
+                .instance()
+                .remove(&DataKey::Role(role.clone()));
         }
     }
     env.storage()
@@ -47,7 +81,7 @@ pub fn remove_role_internal(env: &Env, role: Role, account: &Address) {
 }
 
 pub fn apply_role_grant(env: &Env, grantee: &Address, role: Role) {
-    set_role_internal(env, role, grantee);
+    set_role_internal(env, role.clone(), grantee);
     env.events().publish(
         (Symbol::new(env, "role_assigned"), role, grantee.clone()),
         env.ledger().timestamp(),
@@ -55,7 +89,7 @@ pub fn apply_role_grant(env: &Env, grantee: &Address, role: Role) {
 }
 
 pub fn apply_role_revoke(env: &Env, grantee: &Address, role: Role) {
-    remove_role_internal(env, role, grantee);
+    remove_role_internal(env, role.clone(), grantee);
     env.events().publish(
         (Symbol::new(env, "role_revoked"), role, grantee.clone()),
         env.ledger().timestamp(),
@@ -87,7 +121,7 @@ pub fn has_role_internal(env: &Env, account: &Address, role: Role) -> bool {
     let granted: bool = env
         .storage()
         .persistent()
-        .get(&DataKey::UserRole(account.clone(), role))
+        .get(&DataKey::UserRole(account.clone(), role.clone()))
         .unwrap_or(false);
     if granted {
         return true;

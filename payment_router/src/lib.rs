@@ -7,6 +7,7 @@ pub mod fees;
 pub mod gas_sim;
 pub mod rate_limit;
 pub mod storage;
+mod timelock;
 pub mod types;
 
 pub use access::*;
@@ -18,6 +19,9 @@ pub use gas_sim::*;
 pub use rate_limit::*;
 pub use storage::*;
 pub use types::*;
+
+#[allow(unused_imports)]
+use storage::DataKey;
 
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
@@ -231,6 +235,11 @@ impl PaymentRouter {
         if min_amount_out <= 0 {
             return Err(Error::InvalidSwapParams);
         }
+        Ok(())
+    }
+
+    fn validate_queued_action(env: &Env, action: &QueuedAction) -> Result<(), Error> {
+        let _ = (env, action);
         Ok(())
     }
 
