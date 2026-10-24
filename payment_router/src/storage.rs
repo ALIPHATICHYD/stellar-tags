@@ -1,5 +1,5 @@
 use crate::errors::Error;
-use soroban_sdk::{contracttype, Address, BytesN, Env, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Env};
 
 // ── Tiered Circuit Breaker ───────────────────────────────────────────────────
 
@@ -52,14 +52,6 @@ pub enum Role {
     Pauser = 5,
 }
 
-/// Dedicated key type for the heartbeat operator, kept separate to stay within
-/// Soroban's generated enum size limit for `DataKey`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum HeartbeatKey {
-    HeartbeatOperator,
-}
-
 /// Storage keys for all contract instance and persistent data.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,8 +70,6 @@ pub enum DataKey {
     MinLimit,
     /// Whether routing is currently paused.
     Paused,
-    /// Tiered circuit-breaker pause level.
-    PauseLevel,
     /// Maximum amount accepted by a single payment.
     MaxAmount,
     /// Cumulative lifetime amount routed by a given sender.
@@ -126,14 +116,6 @@ pub enum DataKey {
     /// Inactivity window (seconds) after which the backup admin may claim.
     /// Stored as `u64` in instance storage.
     DmsTimeout,
-    /// Tier 2 council signers for multi-sig succession.
-    DmsTier2Council,
-    /// Tier 2 configuration tuple (threshold: u32, timeout_seconds: u64).
-    DmsTier2Config,
-    /// Pending in-flight dead man's switch claim (DmsClaimStatus) during grace period.
-    DmsPendingClaim,
-    /// List of council signers who approved the pending Tier 2 claim.
-    DmsCouncilApprovals,
     /// Per-address payment invocation cap per ledger sequence.
     /// Stored as `u32` in instance storage (`0` disables rate limiting).
     RateLimitConfig,
@@ -181,12 +163,15 @@ pub enum DataKey {
     UpgradeApproval(BytesN<32>),
     /// Guard against cross-contract reentrancy attacks.
     ReentrancyGuard,
-    /// Packed claimed-leaf bitmap for a Merkle payment batch.
-    MerkleClaimedBits(u64),
-    /// A prepared two-phase cross-contract upgrade manifest, keyed by its
-    /// upgrade ID. Stored in persistent storage so it survives instance
-    /// eviction while the timelock runs.
-    TwoPhaseCommit(BytesN<32>),
+    /// Tiered pause level for the emergency circuit breaker (issue #890).
+    /// Stored as `PauseLevel` in instance storage. Supersedes the legacy
+    /// `DataKey::Paused` boolean; both keys are honoured during migration so
+    /// existing paused state is preserved.
+    PauseLevel,
+    /// The operator address authorized to renew the dead man's switch heartbeat
+    /// without possessing full admin privileges (issue #889).
+    /// Stored as `Address` in instance storage.
+    HeartbeatOperator,
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -198,7 +183,6 @@ pub const DAILY_MAX_LIMIT: i128 = 1_000_000 * XLM_DECIMALS; // 1M tokens limit
 pub const VOLUME_THRESHOLD: i128 = 10_000 * XLM_DECIMALS; // 10,000 XLM threshold for tiered fee discount
 pub const SECONDS_IN_24H: u64 = 24 * 3600;
 pub const MIN_DMS_TIMEOUT: u64 = 7 * 24 * 3600;
-pub const DMS_GRACE_PERIOD: u64 = 72 * 3600;
 pub const DEFAULT_RATE_LIMIT: u32 = 10;
 pub const MAX_RATE_LIMIT: u32 = 1_000_000;
 pub const DEFAULT_MAX_SLIPPAGE_BPS: i128 = 1_000;
@@ -212,8 +196,6 @@ pub const USER_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 pub const USER_LIFETIME_THRESHOLD: u32 = USER_BUMP_AMOUNT - DAY_IN_LEDGERS;
 pub const PERSISTENT_BUMP_AMOUNT: u32 = USER_BUMP_AMOUNT;
 pub const PERSISTENT_LIFETIME_THRESHOLD: u32 = USER_LIFETIME_THRESHOLD;
-/// Number of bits packed into each `u64` word of a Merkle claimed bitset.
-pub const MERKLE_BITS_PER_WORD: u32 = 64;
 
 // ── Reentrancy Guard ─────────────────────────────────────────────────────────
 
@@ -288,4 +270,106 @@ pub fn unpack_legacy_spending(packed: &BytesN<24>) -> (u64, i128) {
         buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
     ]);
     (last_reset_time, accumulated_amount)
+}
+
+pub fn pack_rate_counter(env: &Env, window_ledger: u32, invocations: u32) -> BytesN<8> {
+    let mut buf = [0u8; 8];
+    let s = window_ledger.to_be_bytes();
+    buf[0] = s[0];
+    buf[1] = s[1];
+    buf[2] = s[2];
+    buf[3] = s[3];
+    let c = invocations.to_be_bytes();
+    buf[4] = c[0];
+    buf[5] = c[1];
+    buf[6] = c[2];
+    buf[7] = c[3];
+    BytesN::from_array(env, &buf)
+}
+
+pub fn unpack_rate_counter(packed: &BytesN<8>) -> (u32, u32) {
+    let buf: [u8; 8] = packed.to_array();
+    let window_ledger = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    let invocations = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
+    (window_ledger, invocations)
+}
+
+pub fn current_window(env: &Env) -> u32 {
+    env.ledger().sequence()
+}
+
+pub fn load_user_record(env: &Env, sender: &Address, current_time: u64) -> (u64, i128, i128, bool) {
+    let record_key = DataKey::UserRecord(sender.clone());
+
+    if let Some(packed) = env
+        .storage()
+        .persistent()
+        .get::<DataKey, BytesN<40>>(&record_key)
+    {
+        let (last_reset_time, accumulated_amount, volume) = unpack_user_record(&packed);
+        return (last_reset_time, accumulated_amount, volume, false);
+    }
+
+    let legacy_spending: Option<(u64, i128)> = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserSpending(sender.clone()))
+        .map(|packed: BytesN<24>| unpack_legacy_spending(&packed));
+    let legacy_volume: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UserVolume(sender.clone()))
+        .unwrap_or(0);
+    let (last_reset_time, accumulated_amount) = legacy_spending.unwrap_or((current_time, 0));
+    let legacy_found = legacy_spending.is_some() || legacy_volume != 0;
+    (
+        last_reset_time,
+        accumulated_amount,
+        legacy_volume,
+        legacy_found,
+    )
+}
+
+pub fn accrue_user_record(env: &Env, sender: &Address, amount: i128) -> Result<i128, Error> {
+    let current_time = env.ledger().timestamp();
+    let record_key = DataKey::UserRecord(sender.clone());
+
+    let (mut last_reset_time, mut accumulated_amount, volume, legacy_found) =
+        load_user_record(env, sender, current_time);
+
+    if current_time - last_reset_time >= SECONDS_IN_24H {
+        last_reset_time = current_time;
+        accumulated_amount = 0;
+    }
+
+    let Some(new_accumulated) = accumulated_amount.checked_add(amount) else {
+        return Err(Error::LimitExceeded);
+    };
+    if new_accumulated > DAILY_MAX_LIMIT {
+        return Err(Error::LimitExceeded);
+    }
+    accumulated_amount = new_accumulated;
+
+    let new_volume = volume.saturating_add(amount);
+
+    env.storage().persistent().set(
+        &record_key,
+        &pack_user_record(env, last_reset_time, accumulated_amount, new_volume),
+    );
+    env.storage().persistent().extend_ttl(
+        &record_key,
+        PERSISTENT_LIFETIME_THRESHOLD,
+        PERSISTENT_BUMP_AMOUNT,
+    );
+
+    if legacy_found {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserSpending(sender.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::UserVolume(sender.clone()));
+    }
+
+    Ok(volume)
 }
