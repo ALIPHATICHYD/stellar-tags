@@ -169,6 +169,10 @@ impl TwapOracle {
         let admin = read_admin(&env)?;
         admin.require_auth();
 
+        if Self::is_circuit_breaker_tripped(env.clone()) {
+            return Err(Error::CircuitBreakerTripped);
+        }
+
         if price <= 0 || price > MAX_PRICE {
             return Err(Error::InvalidPrice);
         }

@@ -40,8 +40,9 @@ fn set_time(env: &Env, timestamp: u64) {
     env.ledger().with_mut(|ledger| ledger.timestamp = timestamp);
 }
 
-/// 100 for 60s, then 200 for 60s, then 300. Segment integrals:
-/// obs0.cumulative = 0, obs1.cumulative = 6_000, obs2.cumulative = 18_000.
+/// 100 for 60s, then 105 for 60s, then 110. Each step is within the default
+/// 1000 bps (10%) single-update deviation threshold. Segment integrals:
+/// obs0.cumulative = 0, obs1.cumulative = 6_000, obs2.cumulative = 12_300.
 fn seed_observations(setup: &Setup) {
     set_time(&setup.env, 1_000);
     let _ = setup
@@ -210,7 +211,7 @@ fn observe_enforces_the_minimum_interval() {
         Err(Ok(Error::ObservationTooSoon))
     );
 
-    // Exactly MIN_INTERVAL_SECONDS later is accepted.
+    // Exactly MIN_INTERVAL_SECONDS later is accepted (5% drop <= 10% limit).
     set_time(&setup.env, 1_060);
     assert_eq!(
         setup
@@ -278,6 +279,75 @@ fn observe_handles_high_price_elapsed_product_without_overflow() {
         setup.client.twap(&setup.base, &setup.quote, &60),
         MAX_PRICE
     );
+}
+
+// ── Single-Update Deviation Circuit Breaker ─────────────────────────────────
+
+#[test]
+fn observe_accepts_update_within_max_deviation() {
+    let setup = setup();
+
+    set_time(&setup.env, 1_000);
+    let _ = setup.client.observe(&100, &1_000);
+
+    // 5% drop (500 bps) is within the 1000 bps default threshold.
+    set_time(&setup.env, 1_060);
+    assert_eq!(setup.client.observe(&95, &1_060), 2);
+
+    assert!(!setup.client.is_circuit_breaker_tripped());
+    assert!(!setup
+        .client
+        .is_circuit_breaker_active(&setup.admin, &setup.admin));
+}
+
+#[test]
+fn observe_excessive_single_block_deviation_trips_breaker() {
+    let setup = setup();
+
+    set_time(&setup.env, 1_000);
+    let _ = setup.client.observe(&100, &1_000);
+
+    // 15% instant crash (1500 bps) exceeds the 1000 bps (10%) threshold.
+    // Returning Ok keeps the breaker state persisted; the flawed price is not
+    // stored, so the observation count stays at 1.
+    set_time(&setup.env, 1_060);
+    assert_eq!(setup.client.try_observe(&85, &1_060), Ok(Ok(1)));
+
+    // The pair is now frozen: the breaker is active and further updates are
+    // rejected.
+    assert!(setup.client.is_circuit_breaker_tripped());
+    assert!(setup
+        .client
+        .is_circuit_breaker_active(&setup.admin, &setup.admin));
+
+    set_time(&setup.env, 1_120);
+    assert_eq!(
+        setup.client.try_observe(&85, &1_120),
+        Err(Ok(Error::CircuitBreakerTripped))
+    );
+
+    // Admin intervention restores operation.
+    setup.client.reset_circuit_breaker();
+    assert!(!setup.client.is_circuit_breaker_tripped());
+    set_time(&setup.env, 1_180);
+    // 95 is a 5% drop from the last stored price (100), within the 10% limit.
+    assert_eq!(setup.client.observe(&95, &1_180), 2);
+}
+
+#[test]
+fn is_circuit_breaker_active_view_matches_tripped_state() {
+    let setup = setup();
+
+    let base = Address::generate(&setup.env);
+    let quote = Address::generate(&setup.env);
+
+    assert!(!setup.client.is_circuit_breaker_active(&base, &quote));
+
+    setup.client.trip_circuit_breaker();
+    assert!(setup.client.is_circuit_breaker_active(&base, &quote));
+
+    setup.client.reset_circuit_breaker();
+    assert!(!setup.client.is_circuit_breaker_active(&base, &quote));
 }
 
 #[test]
@@ -550,4 +620,21 @@ fn concurrent_tracking_of_five_distinct_token_pairs() {
         let consult_price = setup.client.consult(base, quote, &60);
         assert_eq!(consult_price, *initial_price);
     }
+}
+
+#[test]
+fn consult_stops_routing_when_breaker_is_active() {
+    let setup = setup();
+    seed_observations(&setup);
+
+    // 100 -> 200 -> 300; an 85 print is a ~71% crash, well over the 10% limit.
+    set_time(&setup.env, 1_180);
+    let _ = setup.client.try_observe(&85, &1_180);
+    assert!(setup.client.is_circuit_breaker_tripped());
+
+    // Routing is frozen while the breaker is active.
+    assert_eq!(
+        setup.client.try_consult(&60),
+        Err(Ok(Error::CircuitBreakerTripped))
+    );
 }
