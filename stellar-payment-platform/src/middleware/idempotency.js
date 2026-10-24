@@ -157,7 +157,9 @@ async function acquireRedlock(clients, lockKey, lockValue, ttlMs, options = {}) 
           if (parsed.state === 'complete') {
             return { acquired: false, existing: parsed };
           }
-        } catch (_) {}
+        } catch (_) {
+          // A malformed record is treated as absent; retry the lock.
+        }
       }
 
       const jitter = Math.floor(Math.random() * retryJitter);
@@ -175,7 +177,9 @@ async function acquireRedlock(clients, lockKey, lockValue, ttlMs, options = {}) 
   if (stored) {
     try {
       existing = JSON.parse(stored);
-    } catch (_) {}
+    } catch (_) {
+      // A malformed record is reported as no existing record.
+    }
   }
 
   return { acquired: false, existing };

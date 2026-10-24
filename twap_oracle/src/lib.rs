@@ -53,7 +53,29 @@ pub const MAX_PRICE: i128 = i128::MAX / 1_000_000_000;
 pub struct Observation {
     pub timestamp: u64,
     pub price: i128,
-    pub cumulative_price: u256,
+    /// High 128 bits of the cumulative price. `u256` is not a contract type,
+    /// so the accumulator is stored as two halves; use
+    /// [`Observation::cumulative_price`] to read it.
+    pub cumulative_hi: u128,
+    /// Low 128 bits of the cumulative price.
+    pub cumulative_lo: u128,
+}
+
+impl Observation {
+    pub fn new(timestamp: u64, price: i128, cumulative_price: u256) -> Self {
+        let (cumulative_hi, cumulative_lo) = cumulative_price.into_words();
+        Observation {
+            timestamp,
+            price,
+            cumulative_hi,
+            cumulative_lo,
+        }
+    }
+
+    /// The cumulative price as a single 256-bit value.
+    pub fn cumulative_price(&self) -> u256 {
+        u256::from_words(self.cumulative_hi, self.cumulative_lo)
+    }
 }
 
 /// Storage keys for the oracle.
@@ -134,10 +156,9 @@ impl TwapOracle {
         let admin = read_admin(&env)?;
         admin.require_auth();
 
-        env.storage().instance().set(
-            &DataKey::Staleness(base, quote),
-            &max_staleness_seconds,
-        );
+        env.storage()
+            .instance()
+            .set(&DataKey::Staleness(base, quote), &max_staleness_seconds);
 
         Ok(())
     }
@@ -191,14 +212,10 @@ impl TwapOracle {
 
             let elapsed = u256::from(timestamp - previous.timestamp);
             let increment = u256::from(previous.price as u128).wrapping_mul(elapsed);
-            cumulative_price = previous.cumulative_price.wrapping_add(increment);
+            cumulative_price = previous.cumulative_price().wrapping_add(increment);
         }
 
-        observations.push_back(Observation {
-            timestamp,
-            price,
-            cumulative_price,
-        });
+        observations.push_back(Observation::new(timestamp, price, cumulative_price));
 
         // Drop the oldest entry once the retained history is full.
         if observations.len() > MAX_OBSERVATIONS {
@@ -244,7 +261,12 @@ impl TwapOracle {
     /// # Panics
     ///
     /// Panics if accessing the stored observations fails.
-    pub fn twap(env: Env, base: Address, quote: Address, window_seconds: u64) -> Result<i128, Error> {
+    pub fn twap(
+        env: Env,
+        base: Address,
+        quote: Address,
+        window_seconds: u64,
+    ) -> Result<i128, Error> {
         if window_seconds == 0 || window_seconds > MAX_WINDOW_SECONDS {
             return Err(Error::InvalidWindow);
         }
@@ -280,16 +302,16 @@ impl TwapOracle {
 
         let base_obs = observations.get(base_index).unwrap();
         let cumulative_at_target = if base_obs.timestamp == target {
-            base_obs.cumulative_price
+            base_obs.cumulative_price()
         } else {
             // Interpolate to the exact window start inside the base segment.
             let elapsed = u256::from(target - base_obs.timestamp);
             let increment = u256::from(base_obs.price as u128).wrapping_mul(elapsed);
-            base_obs.cumulative_price.wrapping_add(increment)
+            base_obs.cumulative_price().wrapping_add(increment)
         };
 
         // Modular arithmetic (uint256 wrapping difference) remains exact across overflows.
-        let accumulated = latest.cumulative_price.wrapping_sub(cumulative_at_target);
+        let accumulated = latest.cumulative_price().wrapping_sub(cumulative_at_target);
 
         let avg = accumulated / u256::from(window_seconds);
         i128::try_from(avg).map_err(|_| Error::PriceOverflow)

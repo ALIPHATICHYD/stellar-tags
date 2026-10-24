@@ -50,6 +50,10 @@ pub enum Role {
     /// from the broader compliance role so the ability to halt routing can be
     /// delegated narrowly.
     Pauser = 5,
+    /// Security officer with authority over emergency security controls.
+    SecurityOfficer = 6,
+    /// Upgrade manager with authority over contract upgrades.
+    UpgradeManager = 7,
 }
 
 /// Storage keys for all contract instance and persistent data.
@@ -101,6 +105,8 @@ pub enum DataKey {
     Frozen,
     /// Whether an address holds a given role.
     UserRole(Address, Role),
+    /// The primary address currently holding a role.
+    Role(Role),
     /// Monotonic nonce for meta-transaction replay protection.
     MetaNonce(Address),
     /// Trusted issuer/oracle queried for high-value payment senders.
