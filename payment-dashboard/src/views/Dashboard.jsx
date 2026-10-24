@@ -14,6 +14,7 @@ import {
   apiErrorMessage,
   errorMessage,
   formatShortAddress,
+  fullTag,
   resolveRecipient,
 } from './shared';
 
@@ -305,7 +306,7 @@ function SendPanel({ userPublicKey, onRefreshBalance }) {
 
 function ReceivePanel({ receive, onNavigate }) {
   const [copied, setCopied] = useState('');
-  const fullTag = receive.tag ? `${receive.tag}*${DEFAULT_FEDERATION_DOMAIN}` : '';
+  const tag = fullTag(receive.tag);
 
   const copy = async (value, label) => {
     try {
@@ -337,12 +338,12 @@ function ReceivePanel({ receive, onNavigate }) {
         />
       </div>
       <div className="receive__fields">
-        {fullTag ? (
+        {tag ? (
           <div className="copy-field">
             <span className="eyebrow">Your tag</span>
             <div className="copy-field__row">
-              <span className="mono text-paper">{fullTag}</span>
-              <button type="button" className="icon-button" onClick={() => copy(fullTag, 'Tag')}>
+              <span className="mono text-paper">{tag}</span>
+              <button type="button" className="icon-button" onClick={() => copy(tag, 'Tag')}>
                 <Icon name={copied === 'Tag' ? 'check' : 'copy'} size={16} label="Copy tag" />
               </button>
             </div>

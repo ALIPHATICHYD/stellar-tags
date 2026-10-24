@@ -9,6 +9,7 @@ import {
   DEFAULT_FEDERATION_DOMAIN,
   apiErrorMessage,
   formatShortAddress,
+  fullTag,
 } from './shared';
 
 const MEMO_PLACEHOLDER = {
@@ -53,7 +54,7 @@ function validateMemo(memoType, memo) {
 }
 
 function ExistingTag({ tag, address, onDone }) {
-  const full = `${tag}*${DEFAULT_FEDERATION_DOMAIN}`;
+  const full = fullTag(tag);
   return (
     <section className="card claimed">
       <div className="claimed__bands" aria-hidden="true">
@@ -116,15 +117,17 @@ function RegistrationPage({ userPublicKey, onConnectWallet, onRegistered, onDone
   useEffect(() => {
     const controller = new AbortController();
     checkTag(debounced, { signal: controller.signal })
-      .then(setAvailability)
+      .then((next) => setAvailability({ ...next, for: debounced }))
       .catch(() => {});
     return () => controller.abort();
   }, [debounced]);
 
   const cleaned = username.trim();
   const ruleError = validateTag(cleaned);
-  const checking = cleaned !== debounced.trim();
-  const shown = checking && cleaned ? { state: 'checking', text: 'Checking...' } : availability;
+  // Still typing, or the request for the latest name has not answered yet
+  // (the API can take a while to wake up).
+  const checking = Boolean(cleaned) && (cleaned !== debounced.trim() || availability.for !== debounced);
+  const shown = checking ? { state: 'checking', text: 'Checking...' } : availability;
   const full = `${(cleaned || 'yourname').toLowerCase()}*${DEFAULT_FEDERATION_DOMAIN}`;
 
   const handleSubmit = async (event) => {
@@ -140,6 +143,10 @@ function RegistrationPage({ userPublicKey, onConnectWallet, onRegistered, onDone
 
     if (!cleaned || ruleError) {
       setStatus({ tone: 'error', text: ruleError || 'Pick a username first.' });
+      return;
+    }
+    if (checking) {
+      setStatus({ tone: 'error', text: 'Still checking that name. Try again in a moment.' });
       return;
     }
     if (availability.state === 'taken') {

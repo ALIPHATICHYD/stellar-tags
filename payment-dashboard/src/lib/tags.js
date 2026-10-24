@@ -1,4 +1,4 @@
-import { API_BASE, DEFAULT_FEDERATION_DOMAIN } from '../views/shared';
+import { API_BASE, fullTag } from '../views/shared';
 
 // Mirrors the backend rules in POST /register.
 export const TAG_PATTERN = /^[a-zA-Z0-9]+$/;
@@ -36,10 +36,13 @@ export const checkTag = async (value, { signal } = {}) => {
   const problem = validateTag(name);
   if (problem) return { state: 'invalid', text: problem };
 
-  const full = `${name.toLowerCase()}*${DEFAULT_FEDERATION_DOMAIN}`;
+  const bare = name.toLowerCase();
+  const full = fullTag(bare);
   try {
+    // Query the bare name so the backend resolves it against the domain it
+    // stored at registration, whatever VITE_FEDERATION_DOMAIN says.
     const response = await fetch(
-      `${API_BASE}/federation?q=${encodeURIComponent(full)}&type=name`,
+      `${API_BASE}/federation?q=${encodeURIComponent(bare)}&type=name`,
       { signal },
     );
     if (response.ok) return { state: 'taken', text: `${full} is taken` };

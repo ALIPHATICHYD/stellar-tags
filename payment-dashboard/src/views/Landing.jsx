@@ -43,11 +43,14 @@ function TagChecker({ onNavigate }) {
 
   useEffect(() => {
     let active = true;
-    checkTag(debounced).then((next) => active && setResult(next));
+    checkTag(debounced).then((next) => active && setResult({ ...next, for: debounced }));
     return () => {
       active = false;
     };
   }, [debounced]);
+
+  const pending = Boolean(tag.trim()) && (tag !== debounced || result.for !== debounced);
+  const shown = pending ? { state: 'checking', text: 'Checking...' } : result;
 
   return (
     <form
@@ -75,9 +78,9 @@ function TagChecker({ onNavigate }) {
           Claim <Icon name="arrow" size={16} />
         </button>
       </div>
-      <p className={`tag-check__status tag-check__status--${result.state}`} aria-live="polite">
+      <p className={`tag-check__status tag-check__status--${shown.state}`} aria-live="polite">
         <span className="dot" aria-hidden="true" />
-        {result.text}
+        {shown.text}
       </p>
     </form>
   );

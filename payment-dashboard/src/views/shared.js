@@ -27,9 +27,18 @@ export const normalizeNameTag = (value) => {
     return '';
   }
 
-  return trimmed.includes('*')
-    ? trimmed
-    : `${trimmed}*${DEFAULT_FEDERATION_DOMAIN}`;
+  // A bare name goes to the API as is: the backend appends its own default
+  // domain, which is what it stored at registration.
+  return trimmed.toLowerCase();
+};
+
+/**
+ * The full name*domain form of a username. The API stores and returns
+ * usernames with the domain already attached, so only bare names get one.
+ */
+export const fullTag = (username) => {
+  if (!username) return '';
+  return username.includes('*') ? username : `${username}*${DEFAULT_FEDERATION_DOMAIN}`;
 };
 
 export const resolveRecipient = async (inputValue) => {
