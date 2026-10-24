@@ -460,19 +460,22 @@ impl TwapOracle {
 
     /// Consults the oracle consensus engine over the given `window_seconds`.
     ///
-    /// - If the circuit breaker is tripped, reverts immediately with [`Error::CircuitBreakerTripped`].
-    /// - Checks primary and secondary price feeds against the staleness limit.
-    /// - If both feeds are fresh:
-    ///   - Validates that discrepancy between feeds does not exceed `max_divergence_bps` (500 bps).
-    ///   - If divergence exceeds the threshold, rejects the consultation with
-    ///     [`Error::CircuitBreakerTripped`]. Because the caller's invocation is
-    ///     rolled back, the breaker itself has to be tripped separately with
-    ///     [`Self::trip_circuit_breaker`] to freeze pricing until an admin
-    ///     resets it.
-    ///   - If within threshold, returns the weighted consensus average.
-    /// - If primary is stale and secondary is fresh, falls back to secondary with a warning event emission.
-    /// - If primary is fresh and secondary is stale or absent, returns the primary price.
-    /// - If both feeds are stale, returns [`Error::PrimaryStale`].
+    /// - Reverts with [`Error::CircuitBreakerTripped`] when the breaker is tripped.
+    /// - Validates both feeds against the staleness limit and the
+    ///   `max_divergence_bps` threshold.
+    /// - Returns the weighted consensus average when both feeds are fresh,
+    ///   falls back to the secondary feed when the primary is stale, and
+    ///   reverts with [`Error::PrimaryStale`] when both feeds are stale.
+    ///
+    /// An exceeded divergence rejects the call with
+    /// [`Error::CircuitBreakerTripped`]. Because the caller's invocation is
+    /// rolled back, the breaker must be tripped separately via
+    /// [`Self::trip_circuit_breaker`] to freeze pricing until an admin resets it.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if an observation index is out of bounds while reading the
+    /// history buffer; the access is bounded by `observations.len()`.
     pub fn consult(env: Env, window_seconds: u64) -> Result<i128, Error> {
         if Self::is_circuit_breaker_tripped(env.clone()) {
             return Err(Error::CircuitBreakerTripped);
