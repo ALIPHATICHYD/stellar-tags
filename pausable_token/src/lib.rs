@@ -136,6 +136,7 @@ pub enum Error {
     PermitDeadlineTooFar = 13,
     InsufficientTransferable = 14,
     NotRegisteredLiquidator = 15,
+    AllowanceExpired = 16,
 }
 
 #[contract]
@@ -695,18 +696,16 @@ impl PausableToken {
     /// Reads the packed allowance for `(from, spender)`.
     ///
     /// An entry whose amount is non-zero but whose expiry has already passed
-    /// reads back as a zeroed amount, preserving the original expiration so a
-    /// later `approve` diff still sees the right baseline.
+    /// is treated as zero and pruned from state.
     fn read_allowance(env: &Env, from: &Address, spender: &Address) -> Allowance {
-        let stored: Option<BytesN<20>> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Allowance(from.clone(), spender.clone()));
+        let key = DataKey::Allowance(from.clone(), spender.clone());
+        let stored: Option<BytesN<20>> = env.storage().persistent().get(&key);
         let (amount, expiration_ledger) = match stored {
             Some(packed) => unpack_allowance(&packed),
             None => (0, 0),
         };
         if amount > 0 && expiration_ledger < env.ledger().sequence() {
+            env.storage().persistent().remove(&key);
             return Allowance {
                 amount: 0,
                 expiration_ledger,
@@ -820,6 +819,10 @@ impl TokenInterface for PausableToken {
         }
         spender.require_auth();
         let allowance = Self::read_allowance(&env, &from, &spender);
+        if allowance.expiration_ledger > 0 && env.ledger().sequence() > allowance.expiration_ledger
+        {
+            panic_with_error!(&env, Error::AllowanceExpired);
+        }
         if allowance.amount < amount {
             panic_with_error!(&env, Error::InsufficientAllowance);
         }
@@ -874,6 +877,10 @@ impl TokenInterface for PausableToken {
         }
         spender.require_auth();
         let allowance = Self::read_allowance(&env, &from, &spender);
+        if allowance.expiration_ledger > 0 && env.ledger().sequence() > allowance.expiration_ledger
+        {
+            panic_with_error!(&env, Error::AllowanceExpired);
+        }
         if allowance.amount < amount {
             panic_with_error!(&env, Error::InsufficientAllowance);
         }
